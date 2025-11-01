@@ -4,9 +4,9 @@
 use core::ffi::c_void;
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_probe_read_kernel},
+    helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_probe_read_kernel},
     macros::{lsm, map},
-    maps::Array,
+    maps::{Array, HashMap},
     programs::LsmContext,
 };
 use aya_log_ebpf::{info, warn};
@@ -21,6 +21,10 @@ const AF_INET6: u16 = 10;
 // eBPF map to store network policy configuration
 #[map]
 static NETWORK_POLICY: Array<NetworkPolicy> = Array::with_max_entries(1, 0);
+
+// eBPF map to track connection count per PID
+#[map]
+static CONNECTION_COUNT: HashMap<u32, u32> = HashMap::with_max_entries(1024, 0);
 
 #[repr(C)]
 struct SockaddrIn {
@@ -47,6 +51,40 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
     }
 }
 
+#[lsm(hook = "socket_release")]
+pub fn socket_release(ctx: LsmContext) -> i32 {
+    match try_socket_release(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_socket_release(ctx: &LsmContext) -> Result<i32, i32> {
+    if !is_download_tool(ctx)? {
+        return Ok(0);
+    }
+
+    // Get PID and decrement connection count
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = (pid_tgid >> 32) as u32;
+
+    if let Some(current_count) = unsafe { CONNECTION_COUNT.get(&pid) }.copied() {
+        if current_count > 0 {
+            let new_count = current_count - 1;
+            if new_count == 0 {
+                // Remove entry if count reaches 0
+                let _ = CONNECTION_COUNT.remove(&pid);
+                info!(ctx, "Connection released for PID {}: {} -> 0 (removed)", pid, current_count);
+            } else {
+                let _ = CONNECTION_COUNT.insert(&pid, &new_count, 0);
+                info!(ctx, "Connection released for PID {}: {} -> {}", pid, current_count, new_count);
+            }
+        }
+    }
+
+    Ok(0)
+}
+
 fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
     if !is_download_tool(ctx)? {
         return Ok(0);
@@ -56,6 +94,10 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
 
     // Get network policy from map
     let policy = NETWORK_POLICY.get(0).ok_or(-1)?;
+
+    // Get PID for connection tracking
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = (pid_tgid >> 32) as u32;
 
     // Get the sockaddr pointer from LSM context (second argument)
     let sockaddr_ptr = unsafe { ctx.arg::<*const c_void>(1) };
@@ -84,13 +126,30 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
                     }
                     
                     // Check if port is in allowed list
-                    if is_port_allowed(ctx, port, policy) {
-                        info!(ctx, "✅ curl ALLOWED: port {}", port);
-                        return Ok(0);
-                    } else {
+                    if !is_port_allowed(ctx, port, policy) {
                         warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {}", port);
                         return Err(-1); // -EPERM (Operation not permitted)
                     }
+                    
+                    // Only count non-DNS connections towards the limit (after all checks pass)
+                    if port != 53 && policy.max_connections > 0 {
+                        let current_count = unsafe { CONNECTION_COUNT.get(&pid) }.copied().unwrap_or(0);
+                        
+                        if current_count >= policy.max_connections {
+                            warn!(ctx, "🚫 SANDBOX BLOCKED: curl exceeded max concurrent connections ({}/{})", 
+                                  current_count, policy.max_connections);
+                            return Err(-104); // -ECONNREFUSED
+                        }
+                        
+                        // Increment connection count only for allowed connections
+                        let new_count = current_count + 1;
+                        CONNECTION_COUNT.insert(&pid, &new_count, 0).map_err(|_| -1)?;
+                        
+                        info!(ctx, "Connection count for PID {}: {} -> {}", pid, current_count, new_count);
+                    }
+                    
+                    info!(ctx, "✅ curl ALLOWED: port {}", port);
+                    return Ok(0);
                 }
                 Err(_) => {
                     warn!(ctx, "🚫 SANDBOX BLOCKED: curl IPv4 connection (could not read sockaddr)");
@@ -101,14 +160,31 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
         Ok(AF_INET6) => {
             match read_port_v6(sockaddr_ptr) {
                 Ok(port) => {
-                    // Check if port is in allowed list
-                    if is_port_allowed(ctx, port, policy) {
-                        info!(ctx, "✅ curl ALLOWED: port {} (IPv6)", port);
-                        return Ok(0);
-                    } else {
+                    // Check if port is in allowed list first
+                    if !is_port_allowed(ctx, port, policy) {
                         warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {} (IPv6)", port);
                         return Err(-1); // -EPERM (Operation not permitted)
                     }
+                    
+                    // Only count non-DNS connections towards the limit (after check passes)
+                    if port != 53 && policy.max_connections > 0 {
+                        let current_count = unsafe { CONNECTION_COUNT.get(&pid) }.copied().unwrap_or(0);
+                        
+                        if current_count >= policy.max_connections {
+                            warn!(ctx, "🚫 SANDBOX BLOCKED: curl exceeded max concurrent connections ({}/{})", 
+                                  current_count, policy.max_connections);
+                            return Err(-104); // -ECONNREFUSED
+                        }
+                        
+                        // Increment connection count only for allowed connections
+                        let new_count = current_count + 1;
+                        CONNECTION_COUNT.insert(&pid, &new_count, 0).map_err(|_| -1)?;
+                        
+                        info!(ctx, "Connection count for PID {}: {} -> {}", pid, current_count, new_count);
+                    }
+                    
+                    info!(ctx, "✅ curl ALLOWED: port {} (IPv6)", port);
+                    return Ok(0);
                 }
                 Err(_) => {
                     warn!(ctx, "🚫 SANDBOX BLOCKED: curl IPv6 connection (could not read port)");
@@ -121,8 +197,8 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
             info!(ctx, "curl ALLOWED: Unix domain socket (local only)");
             return Ok(0);
         }
-        Ok(family) => {
-            warn!(ctx, "🚫 SANDBOX BLOCKED: curl unsupported address family {}", family);
+        Ok(unsupported_family) => {
+            warn!(ctx, "🚫 SANDBOX BLOCKED: curl unsupported address family {}", unsupported_family);
             return Err(-1);
         }
         Err(_) => {

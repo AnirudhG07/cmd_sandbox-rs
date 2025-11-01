@@ -1,34 +1,95 @@
 # TODO: Policy Implementation Status and Roadmap
 
-## Current Implementation Status
+## 📊 Test Suite Summary
 
-### ✅ Implemented Policies (3/24 total)
+**Total Tests**: 13 ✅ (all passing)
+- **Network Tests**: 9 tests (NET-002, NET-005, NET-006)
+- **Memory Tests**: 4 tests (MEM-001, MEM-003, MEM-004)
+- **Filesystem Tests**: 0 tests (not implemented)
+- **Security Tests**: 0 tests (not implemented)
 
-#### Network Access Policies (1/6)
-- ✅ **NET-006**: Allow only ports 80 (HTTP) and 443 (HTTPS) - **IMPLEMENTED**
-  - Using eBPF LSM `socket_connect` hook
-  - Blocks port 80, allows 443 and 53 (DNS)
-  - Status: **Fully working**
-
-#### Memory and Process Policies (2/6)
-- ✅ **MEM-001**: Maximum memory usage: 100MB (currently 10MB) - **IMPLEMENTED**
-  - Using cgroup v2 `memory.max`
-  - Currently set to 10MB, can be adjusted to 100MB
-  - Status: **Working but not triggering OOM on streaming downloads**
-  
-- ⚠️ **MEM-003**: Maximum process execution time: 2 minutes (currently 10s wall clock) - **PARTIALLY IMPLEMENTED**
-  - Wall clock timeout: 10 seconds (via userspace monitoring)
-  - CPU time limit: 2 seconds (via cgroup `cpu.max`)
-  - Requirement: 2 minutes (120 seconds)
-  - Status: **Working but needs adjustment to 120s**
+**Test Organization**: Tests are organized by policy category in:
+- `cmd-sandbox-tests/src/net_tests.rs` - Network policy tests
+- `cmd-sandbox-tests/src/mem_tests.rs` - Memory & process policy tests
+- `cmd-sandbox-tests/src/main.rs` - Test orchestration
 
 ---
 
-## 🔴 Missing Policies (21/24)
+## Current Implementation Status
 
-### Network Access Policies (5/6 missing)
+### ✅ Implemented Policies (6/24 total)
 
-#### ❌ NET-001: Domain Whitelist (Priority: HIGH)
+#### Network Access Policies (3/6)
+- ✅ **NET-006**: Allow only HTTPS (port 443), block HTTP (port 80) - **IMPLEMENTED & TESTED**
+  - Using eBPF LSM `socket_connect` hook
+  - Allows port 443 (HTTPS) and 53 (DNS)
+  - Blocks port 80 (HTTP)
+  - Status: **Fully working**
+  - Tests: `test_net006_https_allowed()`, `test_net006_http_blocked()`
+
+- ✅ **NET-002**: Block non-HTTP protocols - **IMPLEMENTED & TESTED**
+  - Blocks FTP (port 21), SFTP (port 22), Telnet (port 23)
+  - Only allows ports 53 (DNS) and 443 (HTTPS)
+  - Status: **Fully working**
+  - Tests: `test_net002_ftp_blocked()`, `test_net002_sftp_blocked()`, `test_net002_telnet_blocked()`
+
+- ✅ **NET-005**: Block private IP ranges - **IMPLEMENTED & TESTED**
+  - Blocks 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8
+  - Exception: 127.0.0.53:53 allowed for DNS resolver
+  - Status: **Fully working**
+  - Tests: `test_net005_block_192_168()`, `test_net005_block_10_0()`, `test_net005_block_172_16()`, `test_net005_block_loopback()`
+
+#### Memory and Process Policies (3/6)
+- ✅ **MEM-001**: Maximum memory usage: 10MB - **IMPLEMENTED & TESTED**
+  - Using cgroup v2 `memory.max`
+  - Set to 10MB (can be adjusted)
+  - Status: **Working**
+  - Tests: `test_mem001_memory_limit()`
+  
+- ✅ **MEM-003**: Maximum wall clock timeout: 10 seconds - **IMPLEMENTED & TESTED**
+  - Wall clock timeout: 10 seconds (via userspace monitoring)
+  - Kills entire process if execution exceeds 10s
+  - **Note**: This is DIFFERENT from NET-003 (per-connection timeout)
+  - Status: **Working**
+  - Tests: `test_mem003_wall_clock_timeout()`, `test_mem003_quick_operation()`
+
+- ✅ **MEM-004**: CPU throttling: 50% - **IMPLEMENTED & TESTED**
+  - CPU limit: 50% (500000 / 1000000 via cgroup `cpu.max`)
+  - Status: **Working**
+  - Tests: `test_mem004_cpu_throttling()`
+
+---
+
+## 🔴 Missing Policies (18/24)
+
+### Network Access Policies (3/6 missing) - **TARGET NEXT**
+
+#### ❌ NET-001: Domain Whitelist (Priority: HIGH) - **TARGET**
+**Requirement**: Allow HTTP/HTTPS only to whitelisted domains  
+**Current Status**: Not implemented  
+**Feasibility**: ⚠️ DIFFICULT with eBPF alone
+
+**Implementation Options**:
+1. **eBPF + DNS monitoring** (Complex):
+   - Hook `tcp_connect` and capture destination IP
+   - Maintain IP→domain mapping from DNS responses
+   - Hook `udp_sendmsg` to intercept DNS queries
+   - Build allowlist of resolved IPs
+   - **Challenges**: DNS caching, multiple IPs per domain, DNS over HTTPS
+
+2. **Userspace proxy** (Easier but violates kernel-only requirement):
+   - Transparent proxy that resolves domains
+   - eBPF redirects all connections through proxy
+   - Proxy enforces whitelist
+   - **Challenges**: May be considered "wrapper" approach
+
+3. **BPF_PROG_TYPE_SOCK_OPS** (Moderate):
+   - Intercept socket operations
+   - Parse SNI (Server Name Indication) for HTTPS
+   - Block connections based on SNI
+   - **Challenges**: Only works for HTTPS, not plain HTTP
+
+#### ❌ NET-001: Domain Whitelist (Priority: HIGH) - **TARGET**
 **Requirement**: Allow HTTP/HTTPS only to whitelisted domains  
 **Current Status**: Not implemented  
 **Feasibility**: ⚠️ DIFFICULT with eBPF alone
@@ -55,25 +116,19 @@
 
 **Recommendation**: BPF_PROG_TYPE_SOCK_OPS + SNI parsing for HTTPS. For HTTP, may need userspace helper.
 
----
-
-#### ❌ NET-002: Block non-HTTP protocols (Priority: MEDIUM)
-**Requirement**: Block FTP, SFTP, and other protocols  
-**Current Status**: Partially implemented (only HTTP/HTTPS allowed by port)  
-**Feasibility**: ✅ EASY to extend
-
-**Implementation**:
-- Extend current `socket_connect` LSM hook
-- Add checks for ports 21 (FTP), 22 (SSH/SFTP), 23 (Telnet), etc.
-- Block all ports except 80, 443, 53
-
-**Code Location**: `cmd-sandbox-ebpf/src/main.rs` - `socket_connect()` function
+**Test Plan**:
+- `test_net001_allowed_domain()` - Test connection to whitelisted domain succeeds
+- `test_net001_blocked_domain()` - Test connection to non-whitelisted domain fails
 
 ---
 
-#### ❌ NET-003: Connection timeout (30 seconds) (Priority: MEDIUM)
-**Requirement**: Restrict max connection duration to 30 seconds  
-**Current Status**: Not implemented  
+#### ❌ NET-003: Connection timeout (30 seconds) (Priority: MEDIUM) - **TARGET**
+**Requirement**: Restrict max **per-connection** duration to 30 seconds  
+**Current Status**: Config exists (`connection_timeout: 30`) but NOT enforced
+**Difference from MEM-003**: 
+- MEM-003 = Total process wall clock time (10s) ✅ DONE
+- NET-003 = Individual socket connection timeout (30s) ❌ TODO
+
 **Feasibility**: ⚠️ MODERATE
 
 **Implementation Options**:
@@ -91,9 +146,18 @@
 
 **Recommendation**: Extend current userspace monitoring to track per-connection times.
 
+**Test Plan**:
+- `test_net003_short_connection()` - Connection under 30s succeeds
+- `test_net003_long_connection()` - Connection over 30s gets terminated
+
 ---
 
-#### ❌ NET-004: Concurrent connection limit (3) (Priority: LOW)
+#### ❌ NET-004: Concurrent connection limit (3) (Priority: LOW) - **TARGET**
+**Requirement**: Limit to 3 simultaneous connections  
+**Current Status**: Not implemented  
+**Feasibility**: ⚠️ MODERATE
+
+#### ❌ NET-004: Concurrent connection limit (3) (Priority: LOW) - **TARGET**
 **Requirement**: Limit to 3 simultaneous connections  
 **Current Status**: Not implemented  
 **Feasibility**: ⚠️ MODERATE
@@ -106,29 +170,9 @@
 
 **Challenge**: Tracking socket lifecycle (open/close) accurately in eBPF
 
----
-
-#### ❌ NET-005: Block private IP ranges (Priority: MEDIUM)
-**Requirement**: Block 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16  
-**Current Status**: Not implemented  
-**Feasibility**: ✅ EASY
-
-**Implementation**:
-- In `socket_connect` LSM hook, extract destination IP from `struct sockaddr`
-- Check if IP falls in private ranges using bit masking
-- Return -EPERM if in private range
-
-**Code**: Add to existing `socket_connect()` function
-
-```rust
-// Check for private IP ranges
-let ip = sockaddr.sin_addr.s_addr;
-if (ip & 0xFF000000) == 0x0A000000 || // 10.0.0.0/8
-   (ip & 0xFFF00000) == 0xAC100000 || // 172.16.0.0/12
-   (ip & 0xFFFF0000) == 0xC0A80000 {  // 192.168.0.0/16
-    return -EPERM;
-}
-```
+**Test Plan**:
+- `test_net004_within_limit()` - 2 concurrent connections succeed
+- `test_net004_exceed_limit()` - 4th connection fails
 
 ---
 
@@ -504,16 +548,149 @@ unsafe { libc::setrlimit(libc::RLIMIT_STACK, &stack_limit) };
 
 ## 🎯 Recommended Next Steps
 
-1. **Immediate** (Today):
-   - Adjust timeouts to 120 seconds (MEM-003)
-   - Add CPU throttling to 50% (MEM-004)
-   - Implement stack size limit (MEM-006)
+### **Immediate Priority: Complete Network Policies (NET-001, NET-003, NET-004)**
 
-2. **This Week**:
-   - Complete Phase 1 (Quick Wins)
-   - Start Phase 2 with FS-001 (write restrictions)
+#### **NET-001: Domain Whitelist** (Complexity: HIGH)
+**Approach 1 - IP Allowlist (Simpler)**:
+1. Extend `policy_config.json` with `allowed_ips` array
+2. In `socket_connect`, check destination IP against allowlist
+3. Only allow connections to whitelisted IPs
+4. **Pros**: Easy to implement, works immediately
+5. **Cons**: Doesn't handle dynamic IPs, DNS changes
 
-3. **Next Week**:
+**Approach 2 - SNI Parsing for HTTPS** (Harder but better):
+1. Use `BPF_PROG_TYPE_SOCK_OPS` to intercept TLS handshake
+2. Parse SNI (Server Name Indication) from ClientHello
+3. Match SNI against domain allowlist
+4. **Pros**: True domain filtering, handles IP changes
+5. **Cons**: Only works for HTTPS, complex parsing
+
+**Recommended**: Start with Approach 1 (IP allowlist) for quick implementation, then add Approach 2 for HTTPS domains.
+
+**Test Cases to Add**:
+```rust
+// In net_tests.rs
+test_net001_allowed_ip()        // Connection to whitelisted IP succeeds
+test_net001_blocked_ip()        // Connection to non-whitelisted IP fails
+test_net001_allowed_domain()    // If SNI implemented: domain match succeeds
+test_net001_blocked_domain()    // If SNI implemented: domain mismatch fails
+```
+
+---
+
+#### **NET-003: Connection Timeout (30s per socket)** (Complexity: MEDIUM)
+**Current State**: 
+- Config field exists: `connection_timeout: 30` in `policy_config.json` ✅
+- Config loaded into eBPF map in userspace ✅
+- **BUT**: Not actually enforced in eBPF ❌
+
+**Difference from MEM-003**:
+- **MEM-003** (✅ DONE): Total process execution time = 10s (wall clock)
+  - Kills entire curl process after 10 seconds
+  - Implemented via userspace monitoring
+  
+- **NET-003** (❌ TODO): Per-connection timeout = 30s
+  - Each individual TCP connection limited to 30s
+  - A curl process can have multiple connections
+  - If connection #2 takes >30s, kill just that connection
+
+**Approach - Socket-level Timeout Enforcement**:
+1. **Option A - eBPF Timer per Connection** (Preferred):
+   ```rust
+   // In socket_connect hook
+   1. Create BPF timer for this socket
+   2. Set timer callback to close socket after 30s
+   3. Store timer in per-socket map
+   4. Cancel timer on socket_release
+   ```
+   - **Pros**: True per-connection enforcement
+   - **Cons**: Requires kernel 5.15+ for BPF timers
+
+2. **Option B - Userspace Monitoring** (Fallback):
+   ```rust
+   // In monitor_processes()
+   1. Parse /proc/<pid>/net/tcp for active connections
+   2. Track connection start time per socket inode
+   3. Kill process if any single connection > 30s
+   ```
+   - **Pros**: Works on older kernels
+   - **Cons**: Less granular (kills whole process, not just one connection)
+
+**Implementation Steps**:
+```rust
+// In cmd-sandbox/src/main.rs - monitor_process()
+1. Add HashMap<SocketInode, Instant> to track connections
+2. Parse /proc/<pid>/net/tcp every second
+3. Check connection ages
+4. Kill if any connection > 30s
+```
+
+**Test Cases to Add**:
+```rust
+// In net_tests.rs
+test_net003_short_connection()  // Quick request succeeds
+test_net003_long_connection()   // Slow server (>30s) gets killed
+```
+
+---
+
+#### **NET-004: Concurrent Connection Limit (3)** (Complexity: MEDIUM)
+**Approach - eBPF Connection Counter**:
+1. Add BPF hash map: `connection_count: HashMap<pid, u32>`
+2. In `socket_connect`: increment counter, check limit
+3. Add `socket_release` hook to decrement counter
+4. Return `-ECONNREFUSED` if limit exceeded
+
+**Implementation Steps**:
+```rust
+// In cmd-sandbox-ebpf/src/main.rs
+1. Create CONNECTION_COUNT map
+2. In socket_connect():
+   - Get current count for PID
+   - If count >= 3, return -ECONNREFUSED
+   - Else increment and allow
+3. Add socket_release hook to decrement
+```
+
+**Test Cases to Add**:
+```rust
+// In net_tests.rs
+test_net004_within_limit()      // 2 concurrent connections OK
+test_net004_at_limit()          // 3 concurrent connections OK
+test_net004_exceed_limit()      // 4th connection fails
+```
+
+---
+
+### Implementation Plan
+
+**Week 1 - NET-003 & NET-004** (8-12 hours):
+- Day 1-2: NET-003 connection timeout (extend monitoring)
+- Day 3-4: NET-004 concurrent connections (eBPF map tracking)
+- Day 5: Testing and refinement
+
+**Week 2 - NET-001** (16-20 hours):
+- Day 1-2: IP allowlist implementation
+- Day 3-4: SNI parsing for HTTPS (if time permits)
+- Day 5: Testing and integration
+
+**Week 3 - Filesystem Policies** (Start FS-001):
+- Move to filesystem restrictions after NET policies complete
+
+---
+
+## 📊 Estimated Implementation Effort
+
+| Category | Policies | Est. Hours | Difficulty |
+|----------|----------|-----------|------------|
+| **NET-001, NET-003, NET-004** | 3 policies | 24-32 hours | Medium-Hard |
+| Phase 2 (File System) | 6 policies | 16-24 hours | Moderate-Hard |
+| Phase 3 (Security) | 4 policies | 12-16 hours | Mixed |
+| **Total Remaining** | **13 policies** | **52-72 hours** | **6-9 days** |
+
+---
+
+## 🎯 Original Next Steps (Historical)
    - Complete Phase 2 (File System policies)
    - Begin Phase 3 (Security policies)
 

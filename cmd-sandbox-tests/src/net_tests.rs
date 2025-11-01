@@ -399,3 +399,131 @@ pub async fn test_net005_block_loopback(suite: &mut TestSuite) {
     let _ = fs::remove_file("/tmp/test-loopback.html");
     println!();
 }
+
+// ============================================================================
+// NET-004: Concurrent Connection Limit (max 3 connections)
+// ============================================================================
+pub async fn test_net004_within_limit(suite: &mut TestSuite) {
+    println!("{}", "Test NET-004.1: 2 concurrent connections - Should SUCCEED".bold());
+    println!("Command: Running 2 concurrent curl requests");
+    println!("---");
+
+    let start = Instant::now();
+    
+    // Start 2 concurrent requests (both should succeed since limit is 3)
+    let handle1 = tokio::spawn(async {
+        run_curl_command(&["https://example.com", "-o", "/tmp/test-conn1.html"], 10).await
+    });
+    
+    let handle2 = tokio::spawn(async {
+        run_curl_command(&["https://example.com", "-o", "/tmp/test-conn2.html"], 10).await
+    });
+    
+    let (result1, result2) = tokio::join!(handle1, handle2);
+    
+    let success1 = result1.ok().and_then(|r| r.ok()).map(|(s, _)| s.success()).unwrap_or(false);
+    let success2 = result2.ok().and_then(|r| r.ok()).map(|(s, _)| s.success()).unwrap_or(false);
+    
+    suite.record(TestResult {
+        name: "NET-004: 2 concurrent connections".to_string(),
+        passed: success1 && success2,
+        message: format!("Conn1: {}, Conn2: {} (both should succeed)", 
+                        if success1 { "✓" } else { "✗" },
+                        if success2 { "✓" } else { "✗" }),
+        duration: start.elapsed(),
+    });
+    
+    let _ = fs::remove_file("/tmp/test-conn1.html");
+    let _ = fs::remove_file("/tmp/test-conn2.html");
+    println!();
+}
+
+pub async fn test_net004_at_limit(suite: &mut TestSuite) {
+    println!("{}", "Test NET-004.2: 3 concurrent connections (at limit) - Should SUCCEED".bold());
+    println!("Command: Running 3 concurrent curl requests");
+    println!("---");
+
+    let start = Instant::now();
+    
+    // Start 3 concurrent requests (all should succeed since limit is exactly 3)
+    let handle1 = tokio::spawn(async {
+        run_curl_command(&["https://example.com", "-o", "/tmp/test-conn1.html"], 10).await
+    });
+    
+    let handle2 = tokio::spawn(async {
+        run_curl_command(&["https://example.com", "-o", "/tmp/test-conn2.html"], 10).await
+    });
+    
+    let handle3 = tokio::spawn(async {
+        run_curl_command(&["https://example.com", "-o", "/tmp/test-conn3.html"], 10).await
+    });
+    
+    let (result1, result2, result3) = tokio::join!(handle1, handle2, handle3);
+    
+    let success1 = result1.ok().and_then(|r| r.ok()).map(|(s, _)| s.success()).unwrap_or(false);
+    let success2 = result2.ok().and_then(|r| r.ok()).map(|(s, _)| s.success()).unwrap_or(false);
+    let success3 = result3.ok().and_then(|r| r.ok()).map(|(s, _)| s.success()).unwrap_or(false);
+    
+    suite.record(TestResult {
+        name: "NET-004: 3 concurrent connections".to_string(),
+        passed: success1 && success2 && success3,
+        message: format!("Conn1: {}, Conn2: {}, Conn3: {} (all should succeed)", 
+                        if success1 { "✓" } else { "✗" },
+                        if success2 { "✓" } else { "✗" },
+                        if success3 { "✓" } else { "✗" }),
+        duration: start.elapsed(),
+    });
+    
+    let _ = fs::remove_file("/tmp/test-conn1.html");
+    let _ = fs::remove_file("/tmp/test-conn2.html");
+    let _ = fs::remove_file("/tmp/test-conn3.html");
+    println!();
+}
+
+pub async fn test_net004_exceed_limit(suite: &mut TestSuite) {
+    println!("{}", "Test NET-004.3: 4 concurrent connections (exceed limit) - Should PARTIALLY FAIL".bold());
+    println!("Command: Running 4 concurrent curl requests (1 should fail)");
+    println!("---");
+
+    let start = Instant::now();
+    
+    // Start 4 concurrent requests - the 4th should fail
+    // Note: Due to timing, we can't guarantee which one fails, 
+    // but at least one should fail
+    let handles: Vec<_> = (0..4).map(|i| {
+        tokio::spawn(async move {
+            run_curl_command(
+                &["https://example.com", "-o", &format!("/tmp/test-conn{}.html", i)],
+                10
+            ).await
+        })
+    }).collect();
+    
+    let results = futures::future::join_all(handles).await;
+    
+    let successes: Vec<bool> = results.iter()
+        .map(|r| r.as_ref().ok()
+             .and_then(|res| res.as_ref().ok())
+             .map(|(s, _)| s.success())
+             .unwrap_or(false))
+        .collect();
+    
+    let success_count = successes.iter().filter(|&&s| s).count();
+    let fail_count = successes.len() - success_count;
+    
+    // Test passes if we have exactly 3 successes and 1 failure
+    let test_passed = success_count == 3 && fail_count == 1;
+    
+    suite.record(TestResult {
+        name: "NET-004: Exceed concurrent connection limit".to_string(),
+        passed: test_passed,
+        message: format!("{} succeeded, {} failed (expected: 3 success, 1 fail)", 
+                        success_count, fail_count),
+        duration: start.elapsed(),
+    });
+    
+    for i in 0..4 {
+        let _ = fs::remove_file(format!("/tmp/test-conn{}.html", i));
+    }
+    println!();
+}
