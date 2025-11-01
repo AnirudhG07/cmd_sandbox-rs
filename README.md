@@ -11,35 +11,29 @@ Pure eBPF-based sandbox for curl/wget with security policies enforced at the ker
   - ✅ Allows HTTPS (port 443) connections  
   - ✅ Allows DNS (port 53) for hostname resolution
   - ✅ Allows Unix domain sockets (local IPC)
-- **Target**: curl and wget processes
 - **Status**: ✅ Fully working
 
-### 2. File System - Read-only /tmp/downloads/ ❌ (Not Enforceable)
-- **Status**: ❌ **NOT enforced** - users can write anywhere
-- **Why**: eBPF cannot reliably get full file paths without complex/unreliable helpers
-- **Recommendation**: Accept this limitation or use wrapper approach
+### 2. Memory - Maximum 1MB allocation 🔄 (eBPF LSM - In Progress)
+- **Implementation**: LSM hook on `mmap_file` to track memory allocations
+- **Approach**: 
+  - Track memory usage per PID in BPF map
+  - Block new allocations when limit exceeded
+- **Status**: 🔄 Implemented, needs testing
+- **Limitation**: Can track mmap allocations, may not catch all memory types
 
-### 3. Memory - Maximum 1MB allocation ✅ (Launcher)
-- **Implementation**: `curl-launcher` binary sets `RLIMIT_AS` before exec
-- **Behavior**: Kills curl/wget if they try to allocate more than 1MB
-- **Status**: ✅ Fully working
-- **Usage**: `./target/release/curl-launcher curl https://example.com -o /tmp/file.txt`
+### 3. File System - Read-only /tmp/downloads/ ❌ (Not Reliably Enforceable)
+- **Status**: ❌ Not implemented
+- **Why**: Cannot reliably get full file paths in eBPF
 
-### 4. CPU - Time limit 30 seconds ✅ (Launcher)
-- **Implementation**: `curl-launcher` binary sets `RLIMIT_CPU` before exec
-- **Behavior**: Kills curl/wget after 30 seconds of CPU time
-- **Status**: ✅ Fully working
-- **Usage**: `./target/release/curl-launcher curl https://example.com -o /tmp/file.txt`
+### 4. CPU - Time limit 30 seconds 📋 (TODO)
+- **Planned**: Track CPU time in BPF map, send signal when exceeded
+- **Status**: 📋 Not yet implemented
 
-## Summary
-
-**✅ Implemented (3/4 policies)**:
-1. Network: HTTPS-only (pure eBPF) ✅
-2. Memory: 1MB limit (launcher) ✅  
-3. CPU: 30s limit (launcher) ✅
-
-**❌ Not Implemented (1/4)**:
-4. File System: /tmp-only writes ❌
+## Current Status: 1.5/4 Policies Working
+- ✅ Network (HTTPS-only): Fully working
+- 🔄 Memory (1MB limit): Implemented, testing needed
+- ❌ File System: Not feasible in pure eBPF
+- 📋 CPU limit: Not yet implemented
 - **Implementation**: To be implemented
 - **Behavior**: Limit curl/wget memory usage to 1MB
 
@@ -47,10 +41,11 @@ Pure eBPF-based sandbox for curl/wget with security policies enforced at the ker
 
 **Pure eBPF, No Wrappers**
 - ✅ Clean kernel-level enforcement
-- ✅ No wrapper binaries or scripts
+- ✅ No wrapper binaries or scripts required
 - ✅ Works with real curl/wget directly
-- ❌ Cannot automatically redirect file paths (eBPF limitation)
-- ✅ Users learn to use `/tmp` explicitly
+- ✅ Separate monitoring process approach
+- ❌ Cannot enforce file path restrictions (eBPF limitation)
+- ❌ Cannot catch all memory allocation types
 
 ## Installation & Usage
 
@@ -61,10 +56,9 @@ cargo build --release
 ```
 
 This builds:
-- `target/release/cmd-sandbox` - eBPF loader (enforces HTTPS-only)
-- `target/release/curl-launcher` - Resource limit launcher (enforces memory/CPU limits)
+- `target/release/cmd-sandbox` - eBPF sandbox (enforces policies)
 
-### 2. Run the eBPF sandbox (Terminal 1)
+### 2. Run the eBPF sandbox
 
 ```bash
 sudo -E RUST_LOG=info ./target/release/cmd-sandbox
@@ -73,17 +67,65 @@ sudo -E RUST_LOG=info ./target/release/cmd-sandbox
 Output:
 ```
 ✓ socket_connect LSM hook attached (HTTPS-only policy)
+✓ mmap_file LSM hook attached (1MB memory limit policy)
 Waiting for Ctrl-C...
 ```
 
-### 3. Use curl/wget with launcher (Terminal 2)
+### 3. Use curl/wget normally
 
-**Option A: With resource limits (recommended)**
+Simply run curl or wget as usual - the sandbox monitors and enforces policies:
+
 ```bash
-# Full protection: HTTPS + Memory + CPU limits
-./target/release/curl-launcher curl https://example.com -o /tmp/file.txt
+# HTTPS works
+curl https://example.com -o /tmp/file.txt
 
-# Output shows limits:
+# HTTP is blocked
+curl http://example.com -o /tmp/file.txt
+# Error: Couldn't connect to server
+
+# Large downloads (>1MB) may be blocked
+curl https://httpbin.org/bytes/2097152 -o /tmp/large.bin
+```
+
+## Testing
+
+### Quick Tests
+
+See [TESTING.md](TESTING.md) for detailed test commands.
+
+```bash
+# Run automated test suite
+./test-all-policies.sh
+
+# Or test memory limit specifically  
+./test-memory-limit.sh
+```
+
+### Manual Testing
+
+**Test HTTPS-only policy:**
+```bash
+# Should work
+curl https://example.com -o /tmp/test.html
+
+# Should fail
+curl http://example.com -o /tmp/test.html
+```
+
+**Test memory limit:**
+```bash
+# Should work (small file)
+curl https://httpbin.org/bytes/102400 -o /tmp/small.bin
+
+# Should fail (large file >1MB)
+curl https://httpbin.org/bytes/2097152 -o /tmp/large.bin
+```
+
+**Check logs:**
+```bash
+# Sandbox output shows enforcement actions
+sudo dmesg | tail -30
+```
 # 🔒 Launching curl with resource limits:
 #    - Memory limit: 1MB
 #    - CPU time limit: 30 seconds

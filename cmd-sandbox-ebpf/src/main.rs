@@ -18,10 +18,6 @@ const AF_INET6: u16 = 10;
 const HTTPS_PORT: u16 = 443;
 const DNS_PORT: u16 = 53;  // DNS for name resolution
 
-// Resource limits
-const MAX_MEMORY_BYTES: u64 = 1024 * 1024; // 1MB
-const MAX_CPU_SECONDS: u64 = 30; // 30 seconds
-
 #[repr(C)]
 struct SockaddrIn {
     sin_family: u16,
