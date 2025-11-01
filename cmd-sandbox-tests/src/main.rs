@@ -2,24 +2,27 @@ use anyhow::{Context, Result};
 use colored::*;
 use std::fs;
 use std::path::Path;
-use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
+// Test modules organized by policy category
+mod net_tests;
+mod mem_tests;
+
 #[derive(Debug)]
-struct TestResult {
-    name: String,
-    passed: bool,
-    message: String,
-    duration: Duration,
+pub struct TestResult {
+    pub name: String,
+    pub passed: bool,
+    pub message: String,
+    pub duration: Duration,
 }
 
-struct TestSuite {
-    results: Vec<TestResult>,
-    total: usize,
-    passed: usize,
-    failed: usize,
+pub struct TestSuite {
+    pub results: Vec<TestResult>,
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
 }
 
 impl TestSuite {
@@ -116,280 +119,6 @@ async fn run_curl_command(args: &[&str], timeout_secs: u64) -> Result<(ExitStatu
     }
 }
 
-async fn test_https_allowed(suite: &mut TestSuite) {
-    println!("\n{}", "Test 1.1: HTTPS (port 443) - Should SUCCEED".bold());
-    println!("Command: curl https://example.com -o /tmp/test-https.html");
-    println!("---");
-
-    let start = Instant::now();
-    let result = run_curl_command(
-        &["https://example.com", "-o", "/tmp/test-https.html"],
-        10,
-    )
-    .await;
-
-    match result {
-        Ok((status, _)) if status.success() => {
-            let file_size = fs::metadata("/tmp/test-https.html")
-                .map(|m| m.len())
-                .unwrap_or(0);
-            suite.record(TestResult {
-                name: "HTTPS allowed".to_string(),
-                passed: true,
-                message: format!("Downloaded {} bytes via HTTPS", file_size),
-                duration: start.elapsed(),
-            });
-            let _ = fs::remove_file("/tmp/test-https.html");
-        }
-        Ok((status, _)) => {
-            suite.record(TestResult {
-                name: "HTTPS allowed".to_string(),
-                passed: false,
-                message: format!("HTTPS request failed with exit code: {:?}", status.code()),
-                duration: start.elapsed(),
-            });
-        }
-        Err(e) => {
-            suite.record(TestResult {
-                name: "HTTPS allowed".to_string(),
-                passed: false,
-                message: format!("Error: {}", e),
-                duration: start.elapsed(),
-            });
-        }
-    }
-    println!();
-}
-
-async fn test_http_blocked(suite: &mut TestSuite) {
-    println!("{}", "Test 1.2: HTTP (port 80) - Should FAIL".bold());
-    println!("Command: curl http://neverssl.com -o /tmp/test-http.html");
-    println!("---");
-
-    let start = Instant::now();
-    let result = run_curl_command(
-        &["http://neverssl.com", "-o", "/tmp/test-http.html"],
-        10,
-    )
-    .await;
-
-    match result {
-        Ok((status, _)) if !status.success() => {
-            suite.record(TestResult {
-                name: "HTTP blocked".to_string(),
-                passed: true,
-                message: format!("HTTP blocked (exit code: {:?})", status.code()),
-                duration: start.elapsed(),
-            });
-        }
-        Ok((status, _)) => {
-            suite.record(TestResult {
-                name: "HTTP blocked".to_string(),
-                passed: false,
-                message: format!("HTTP was not blocked (exit code: {:?})", status.code()),
-                duration: start.elapsed(),
-            });
-        }
-        Err(e) => {
-            suite.record(TestResult {
-                name: "HTTP blocked".to_string(),
-                passed: false,
-                message: format!("Error: {}", e),
-                duration: start.elapsed(),
-            });
-        }
-    }
-    let _ = fs::remove_file("/tmp/test-http.html");
-    println!();
-}
-
-async fn test_small_download(suite: &mut TestSuite) {
-    println!("{}", "Test 2.1: Small download (<10MB) - Should SUCCEED".bold());
-    println!("Command: curl https://example.com -o /tmp/small.html");
-    println!("---");
-
-    let start = Instant::now();
-    let result = run_curl_command(&["https://example.com", "-o", "/tmp/small.html"], 10).await;
-
-    match result {
-        Ok((status, _)) if status.success() => {
-            suite.record(TestResult {
-                name: "Small download".to_string(),
-                passed: true,
-                message: "Small download succeeded".to_string(),
-                duration: start.elapsed(),
-            });
-            let _ = fs::remove_file("/tmp/small.html");
-        }
-        Ok((status, _)) => {
-            suite.record(TestResult {
-                name: "Small download".to_string(),
-                passed: false,
-                message: format!("Small download failed (exit code: {:?})", status.code()),
-                duration: start.elapsed(),
-            });
-        }
-        Err(e) => {
-            suite.record(TestResult {
-                name: "Small download".to_string(),
-                passed: false,
-                message: format!("Error: {}", e),
-                duration: start.elapsed(),
-            });
-        }
-    }
-    println!();
-}
-
-async fn test_wall_clock_timeout(suite: &mut TestSuite) {
-    println!("{}", "Test 3.1: Wall clock timeout (>10s) - Should TIMEOUT".bold());
-    println!("Command: curl https://ash-speed.hetzner.com/10GB.bin -o /tmp/timeout-test.bin");
-    println!("---");
-    println!("Note: Should be killed after ~10 seconds wall clock time by sandbox");
-
-    let start = Instant::now();
-    let result = run_curl_command(
-        &[
-            "https://ash-speed.hetzner.com/10GB.bin",
-            "-o",
-            "/tmp/timeout-test.bin",
-        ],
-        15, // Give it 15s but sandbox should kill at 10s
-    )
-    .await;
-
-    let duration = start.elapsed();
-    let duration_secs = duration.as_secs_f64();
-
-    match result {
-        Ok((status, _)) => {
-            let exit_code = status.code().unwrap_or(0);
-            // Check if timing is within acceptable range (9.5-11.5s for 10s timeout)
-            // The sandbox monitors every second, so there's inherent timing variance
-            let timing_correct = duration_secs >= 9.5 && duration_secs <= 11.5;
-            
-            if timing_correct {
-                // If timing is correct, we consider the wall clock timeout working
-                // regardless of exit code, since the process was terminated around the right time
-                suite.record(TestResult {
-                    name: "Wall clock timeout".to_string(),
-                    passed: true,
-                    message: format!(
-                        "Process terminated after {:.3}s (within 10s wall clock limit, exit: {}, signal: {:?})",
-                        duration_secs, exit_code, status.signal()
-                    ),
-                    duration,
-                });
-            } else {
-                suite.record(TestResult {
-                    name: "Wall clock timeout".to_string(),
-                    passed: false,
-                    message: format!(
-                        "Process timing incorrect ({:.3}s, expected ~10s, exit code: {})",
-                        duration_secs, exit_code
-                    ),
-                    duration,
-                });
-            }
-        }
-        Err(e) => {
-            suite.record(TestResult {
-                name: "Wall clock timeout".to_string(),
-                passed: false,
-                message: format!("Error: {}", e),
-                duration,
-            });
-        }
-    }
-    let _ = fs::remove_file("/tmp/timeout-test.bin");
-    println!();
-}
-
-async fn test_quick_operation(suite: &mut TestSuite) {
-    println!("{}", "Test 3.2: Quick operation (<10s) - Should SUCCEED".bold());
-    println!("Command: curl https://example.com -o /tmp/quick.html");
-    println!("---");
-
-    let start = Instant::now();
-    let result = run_curl_command(&["https://example.com", "-o", "/tmp/quick.html"], 10).await;
-
-    let duration = start.elapsed();
-
-    match result {
-        Ok((status, _)) if status.success() => {
-            suite.record(TestResult {
-                name: "Quick operation".to_string(),
-                passed: true,
-                message: format!("Quick operation completed in {:.3}s (under limits)", duration.as_secs_f64()),
-                duration,
-            });
-            let _ = fs::remove_file("/tmp/quick.html");
-        }
-        Ok((status, _)) => {
-            suite.record(TestResult {
-                name: "Quick operation".to_string(),
-                passed: false,
-                message: format!(
-                    "Quick operation failed (exit code: {:?} after {:.3}s)",
-                    status.code(),
-                    duration.as_secs_f64()
-                ),
-                duration,
-            });
-        }
-        Err(e) => {
-            suite.record(TestResult {
-                name: "Quick operation".to_string(),
-                passed: false,
-                message: format!("Error: {}", e),
-                duration,
-            });
-        }
-    }
-    println!();
-}
-
-async fn test_multiple_requests(suite: &mut TestSuite) {
-    println!("{}", "Test 3.3: Multiple rapid requests - CPU throttling test".bold());
-    println!("Command: Running 30 curl requests in rapid succession");
-    println!("---");
-
-    let start = Instant::now();
-    let mut success_count = 0;
-    let mut fail_count = 0;
-
-    for i in 0..30 {
-        let result = run_curl_command(&["https://example.com", "-o", "/dev/null"], 2).await;
-        match result {
-            Ok((status, _)) if status.success() => success_count += 1,
-            _ => fail_count += 1,
-        }
-        if (i + 1) % 10 == 0 {
-            print!(".");
-        }
-    }
-    println!();
-
-    let duration = start.elapsed();
-    println!("Completed in {:.0}s", duration.as_secs_f64());
-    println!("Successful requests: {}", success_count);
-    println!("Failed requests: {}", fail_count);
-
-    // This test always passes - we're just observing throttling
-    suite.record(TestResult {
-        name: "CPU throttling test".to_string(),
-        passed: true,
-        message: format!(
-            "{} successful, {} failed in {:.0}s",
-            success_count,
-            fail_count,
-            duration.as_secs_f64()
-        ),
-        duration,
-    });
-    println!();
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("{}", "╔════════════════════════════════════════════════════════════════╗".cyan());
@@ -426,26 +155,80 @@ async fn main() -> Result<()> {
 
     let mut suite = TestSuite::new();
 
-    // Network Policy Tests
+    // ========================================================================
+    // NETWORK POLICIES (NET-001 to NET-006)
+    // ========================================================================
     println!("{}", "━".repeat(70));
-    println!("{}", "🔒 Test 1: HTTPS-Only Policy (Network)".bold());
+    println!("{}", "🌐 NETWORK POLICIES".bold().cyan());
     println!("{}", "━".repeat(70));
-    test_https_allowed(&mut suite).await;
-    test_http_blocked(&mut suite).await;
+    println!();
 
-    // Memory Policy Tests
-    println!("{}", "━".repeat(70));
-    println!("{}", "💾 Test 2: Memory Limit Policy (cgroup)".bold());
-    println!("{}", "━".repeat(70));
-    test_small_download(&mut suite).await;
+    // NET-006: HTTPS-Only Policy
+    println!("{}", "▶ NET-006: HTTPS-Only Policy".bold());
+    net_tests::test_net006_https_allowed(&mut suite).await;
+    net_tests::test_net006_http_blocked(&mut suite).await;
 
-    // Timing Policy Tests
+    // NET-002: Protocol Blocking
+    println!("{}", "▶ NET-002: Protocol Blocking".bold());
+    net_tests::test_net002_ftp_blocked(&mut suite).await;
+    net_tests::test_net002_sftp_blocked(&mut suite).await;
+    net_tests::test_net002_telnet_blocked(&mut suite).await;
+
+    // NET-005: Private IP Blocking
+    println!("{}", "▶ NET-005: Private IP Blocking".bold());
+    net_tests::test_net005_block_192_168(&mut suite).await;
+    net_tests::test_net005_block_10_0(&mut suite).await;
+    net_tests::test_net005_block_172_16(&mut suite).await;
+    net_tests::test_net005_block_loopback(&mut suite).await;
+
+    // ========================================================================
+    // MEMORY & PROCESS POLICIES (MEM-001 to MEM-004)
+    // ========================================================================
     println!("{}", "━".repeat(70));
-    println!("{}", "⏱️  Test 3: Timing Limits (CPU + Wall clock)".bold());
+    println!("{}", "💾 MEMORY & PROCESS POLICIES".bold().cyan());
     println!("{}", "━".repeat(70));
-    test_wall_clock_timeout(&mut suite).await;
-    test_quick_operation(&mut suite).await;
-    test_multiple_requests(&mut suite).await;
+    println!();
+
+    // MEM-001: Memory Limit
+    println!("{}", "▶ MEM-001: Memory Limit".bold());
+    mem_tests::test_mem001_memory_limit(&mut suite).await;
+
+    // MEM-003: Wall Clock Timeout
+    println!("{}", "▶ MEM-003: Wall Clock Timeout".bold());
+    mem_tests::test_mem003_wall_clock_timeout(&mut suite).await;
+    mem_tests::test_mem003_quick_operation(&mut suite).await;
+
+    // MEM-004: CPU Throttling
+    println!("{}", "▶ MEM-004: CPU Throttling".bold());
+    mem_tests::test_mem004_cpu_throttling(&mut suite).await;
+
+    // ========================================================================
+    // FILESYSTEM POLICIES (FS-001 to FS-006) - TODO: Not yet implemented
+    // ========================================================================
+    println!("{}", "━".repeat(70));
+    println!("{}", "📁 FILESYSTEM POLICIES (Not Implemented)".bold().yellow());
+    println!("{}", "━".repeat(70));
+    println!("   FS-001: Write to /tmp only - TODO");
+    println!("   FS-002: Read-only filesystem outside /tmp - TODO");
+    println!("   FS-003: File size limits - TODO");
+    println!("   FS-004: Inode limits - TODO");
+    println!("   FS-005: Path traversal protection - TODO");
+    println!("   FS-006: Symlink restrictions - TODO");
+    println!();
+
+    // ========================================================================
+    // SECURITY POLICIES (SEC-001 to SEC-006) - TODO: Not yet implemented
+    // ========================================================================
+    println!("{}", "━".repeat(70));
+    println!("{}", "🔒 SECURITY POLICIES (Not Implemented)".bold().yellow());
+    println!("{}", "━".repeat(70));
+    println!("   SEC-001: No privilege escalation - TODO");
+    println!("   SEC-002: No ptrace - TODO");
+    println!("   SEC-003: No kernel module loading - TODO");
+    println!("   SEC-004: Seccomp filter - TODO");
+    println!("   SEC-005: Capability dropping - TODO");
+    println!("   SEC-006: Namespace isolation - TODO");
+    println!();
 
     // Print summary
     suite.print_summary();
