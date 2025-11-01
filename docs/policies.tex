@@ -1,0 +1,212 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{amssymb}
+\usepackage{newunicodechar}
+\usepackage{tabularx}
+\newunicodechar{✅}{\checkmark}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    pdftitle={User Command Sandbox Policy Requirements Document},
+    bookmarks=true
+}
+
+\title{\bf User Command Sandbox: Policy Requirements Document}
+\author{Teaching Assistant \\ E0256 - Computer Systems Security \\ Indian Institute of Science}
+\date{Autumn 2025}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+This document specifies the mandatory policy requirements for the User Command Sandbox project. All student implementations must enforce these policies at the kernel level for the \texttt{curl} command. The policies are designed to demonstrate the advantages of kernel-level enforcement over container-based approaches, providing fine-grained control over system resources and security boundaries.
+
+\section{Policy Categories and Requirements}
+
+\subsection{Network Access Policies}
+\begin{table}[h]
+\centering
+\caption{Network Access Policy Requirements}
+\label{tab:network_policies}
+\begin{tabularx}{\textwidth}{|l|X|l|}
+\hline
+\textbf{Policy ID} & \textbf{Policy Description} & \textbf{Enforcement Level} \\
+\hline
+NET-001 & Allow HTTP/HTTPS connections only to domains specified in whitelist & BLOCK \\
+NET-002 & Block all FTP, SFTP, and other non-HTTP protocols & BLOCK \\
+NET-003 & Restrict maximum connection duration to 30 seconds & TIMEOUT \\
+NET-004 & Limit concurrent connections to 3 simultaneous connections & THROTTLE \\
+NET-005 & Block connections to private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) & BLOCK \\
+NET-006 & Allow only ports 80 (HTTP) and 443 (HTTPS) & BLOCK \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{File System Policies}
+\begin{table}[h]
+\centering
+\caption{File System Access Policy Requirements}
+\label{tab:filesystem_policies}
+\begin{tabularx}{\textwidth}{|l|X|l|}
+\hline
+\textbf{Policy ID} & \textbf{Policy Description} & \textbf{Enforcement Level} \\
+\hline
+FS-001 & Allow file writes only to \texttt{/tmp/curl\_downloads/} directory & RESTRICT \\
+FS-002 & Block all file read operations outside user's home directory & BLOCK \\
+FS-003 & Maximum file download size: 10MB per file & QUOTA \\
+FS-004 & Prevent execution of downloaded files & BLOCK \\
+FS-005 & Restrict total storage usage to 50MB & QUOTA \\
+FS-006 & Block access to system directories (\texttt{/etc/, /bin/, /sbin/, /usr/}) & BLOCK \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Memory and Process Policies}
+\begin{table}[h]
+\centering
+\caption{Memory and Process Policy Requirements}
+\label{tab:memory_policies}
+\begin{tabularx}{\textwidth}{|l|X|l|}
+\hline
+\textbf{Policy ID} & \textbf{Policy Description} & \textbf{Enforcement Level} \\
+\hline
+MEM-001 & Maximum memory usage: 100MB & LIMIT \\
+MEM-002 & Prevent fork() and exec() system calls during execution & BLOCK \\
+MEM-003 & Maximum process execution time: 2 minutes & TIMEOUT \\
+MEM-004 & Restrict CPU usage to 50\% of single core & THROTTLE \\
+MEM-005 & Block memory mapping of executable pages & BLOCK \\
+MEM-006 & Limit stack size to 8MB & LIMIT \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Security and Isolation Policies}
+\begin{table}[h]
+\centering
+\caption{Security and Isolation Policy Requirements}
+\label{tab:security_policies}
+\begin{tabularx}{\textwidth}{|l|X|l|}
+\hline
+\textbf{Policy ID} & \textbf{Policy Description} & \textbf{Enforcement Level} \\
+\hline
+SEC-001 & Run curl as non-privileged user (nobody) & ISOLATE \\
+SEC-002 & Block access to environment variables containing "PASSWORD", "KEY", "SECRET" & FILTER \\
+SEC-003 & Prevent network interface configuration changes & BLOCK \\
+SEC-004 & Restrict signal handling (allow only TERM, INT) & FILTER \\
+SEC-005 & Block access to kernel memory and modules & BLOCK \\
+SEC-006 & Isolate network namespace from host & ISOLATE \\
+\hline
+\end{tabularx}
+\end{table}
+
+\section{Policy Configuration Format}
+Students must implement policy configuration using JSON  (or any other suitable file format) as shown below:
+
+\begin{lstlisting}[language=json, backgroundcolor=\color{gray!10}, basicstyle=\footnotesize\ttfamily]
+{
+  "policy_version": "1.0",
+  "command": "curl",
+  "network_policies": {
+    "allowed_domains": ["example.com", "iisc.ac.in", "trusted.org"],
+    "allowed_ports": [80, 443],
+    "max_connections": 3,
+    "connection_timeout": 30,
+    "block_private_ips": true
+  },
+  "filesystem_policies": {
+    "allowed_write_dirs": ["/tmp/curl_downloads/"],
+    "max_file_size": 10485760,
+    "max_total_storage": 52428800,
+    "blocked_paths": ["/etc/", "/bin/", "/sbin/", "/usr/"]
+  },
+  "memory_policies": {
+    "max_memory": 104857600,
+    "max_stack_size": 8388608,
+    "max_cpu_time": 120,
+    "cpu_limit_percent": 50
+  },
+  "security_policies": {
+    "run_as_user": "nobody",
+    "blocked_environment": ["PASSWORD", "KEY", "SECRET"],
+    "allowed_signals": ["TERM", "INT"],
+    "isolate_network": true
+  }
+}
+\end{lstlisting}
+
+\section{Enforcement Mechanisms}
+
+\subsection{System Call Interception}
+Students must implement system call interception for the following critical operations:
+
+\begin{itemize}
+    \item \textbf{Socket operations:} socket(), connect(), bind(), accept()
+    \item \textbf{File operations:} open(), openat(), read(), write(), mkdir()
+    \item \textbf{Process operations:} fork(), execve(), clone()
+    \item \textbf{Memory operations:} mmap(), brk(), mprotect()
+    \item \textbf{Signal operations:} signal(), sigaction()
+\end{itemize}
+
+\subsection{Policy Violation Handling}
+\begin{table}[h]
+\centering
+\caption{Policy Violation Response Requirements}
+\label{tab:violation_handling}
+\begin{tabularx}{\textwidth}{|l|X|X|}
+\hline
+\textbf{Violation Type} & \textbf{Required Action} & \textbf{Log Message} \\
+\hline
+Network Policy Violation & Block connection + Terminate process & "NETWORK\_VIOLATION: Attempted connection to blocked domain" \\
+File System Violation & Block operation + Continue execution & "FS\_VIOLATION: Attempted write to restricted path" \\
+Memory Limit Exceeded & Terminate process + Cleanup & "MEMORY\_VIOLATION: Exceeded allocated memory limit" \\
+Timeout Violation & Terminate process & "TIMEOUT\_VIOLATION: Process exceeded maximum execution time" \\
+Security Violation & Immediate termination & "SECURITY\_VIOLATION: Attempted privileged operation" \\
+\hline
+\end{tabularx}
+\end{table}
+
+\section{Testing and Validation Requirements}
+
+\subsection{Mandatory Test Cases}
+Students must demonstrate the following test scenarios:
+
+\begin{enumerate}
+    \item \textbf{Test NET-001:} Attempt to connect to non-whitelisted domain → Should be blocked
+    \item \textbf{Test NET-005:} Attempt to connect to 192.168.1.1 → Should be blocked
+    \item \textbf{Test FS-001:} Attempt to write to \texttt{/home/user/file} → Should be blocked
+    \item \textbf{Test FS-003:} Download file larger than 10MB → Should be blocked
+    \item \textbf{Test MEM-001:} Allocate 150MB memory → Process should be terminated
+    \item \textbf{Test MEM-003:} Run process for 3 minutes → Should timeout and terminate
+    \item \textbf{Test SEC-002:} Access environment variable with "PASSWORD" → Should be filtered
+\end{enumerate}
+
+\section{Evaluation Criteria}
+
+\subsection{Policy Implementation (40\%)}
+\begin{itemize}
+    \item Complete implementation of all mandatory policies (20\%)
+    \item Correct handling of policy violations (10\%)
+    \proper Policy configuration parsing and application (10\%)
+\end{itemize}
+
+\subsection{Security Effectiveness (30\%)}
+\begin{itemize}
+    \item Successful prevention of all policy violations (15\%)
+    \item Proper isolation from host system (10\%)
+    \item Secure cleanup after termination (5\%)
+\end{itemize}
+
+\subsection{Code Quality and Documentation (30\%)}
+\begin{itemize}
+    \item Clean, well-documented kernel module/eBPF code (15\%)
+    \item Comprehensive test suite coverage (10\%)
+    \item Clear architecture documentation (5\%)
+\end{itemize}
+
+\end{document}

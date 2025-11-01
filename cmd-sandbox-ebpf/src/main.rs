@@ -5,18 +5,22 @@ use core::ffi::c_void;
 
 use aya_ebpf::{
     helpers::{bpf_get_current_comm, bpf_probe_read_kernel},
-    macros::lsm,
+    macros::{lsm, map},
+    maps::Array,
     programs::LsmContext,
 };
 use aya_log_ebpf::{info, warn};
+use cmd_sandbox_common::policy_shared::NetworkPolicy;
 
 const CURL_COMM: &[u8; 4] = b"curl";
 const WGET_COMM: &[u8; 4] = b"wget";
 const AF_UNIX: u16 = 1;  // Unix domain sockets (local only)
 const AF_INET: u16 = 2;
 const AF_INET6: u16 = 10;
-const HTTPS_PORT: u16 = 443;
-const DNS_PORT: u16 = 53;  // DNS for name resolution
+
+// eBPF map to store network policy configuration
+#[map]
+static NETWORK_POLICY: Array<NetworkPolicy> = Array::with_max_entries(1, 0);
 
 #[repr(C)]
 struct SockaddrIn {
@@ -50,6 +54,9 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
 
     info!(ctx, "curl/wget socket_connect intercepted");
 
+    // Get network policy from map
+    let policy = NETWORK_POLICY.get(0).ok_or(-1)?;
+
     // Get the sockaddr pointer from LSM context (second argument)
     let sockaddr_ptr = unsafe { ctx.arg::<*const c_void>(1) };
     
@@ -62,11 +69,9 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
         Ok(AF_INET) => {
             match read_port_v4(sockaddr_ptr) {
                 Ok(port) => {
-                    if port == HTTPS_PORT {
-                        info!(ctx, "✅ curl ALLOWED: HTTPS port {}", port);
-                        return Ok(0);
-                    } else if port == DNS_PORT {
-                        info!(ctx, "✅ curl ALLOWED: DNS port {}", port);
+                    // Check if port is in allowed list
+                    if is_port_allowed(ctx, port, policy) {
+                        info!(ctx, "✅ curl ALLOWED: port {}", port);
                         return Ok(0);
                     } else {
                         warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {}", port);
@@ -82,11 +87,9 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
         Ok(AF_INET6) => {
             match read_port_v6(sockaddr_ptr) {
                 Ok(port) => {
-                    if port == HTTPS_PORT {
-                        info!(ctx, "curl ALLOWED: HTTPS port {} (IPv6)", port);
-                        return Ok(0);
-                    } else if port == DNS_PORT {
-                        info!(ctx, "curl ALLOWED: DNS port {} (IPv6)", port);
+                    // Check if port is in allowed list
+                    if is_port_allowed(ctx, port, policy) {
+                        info!(ctx, "✅ curl ALLOWED: port {} (IPv6)", port);
                         return Ok(0);
                     } else {
                         warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {} (IPv6)", port);
@@ -113,6 +116,21 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
             return Err(-1);
         }
     }
+}
+
+fn is_port_allowed(ctx: &LsmContext, port: u16, policy: &NetworkPolicy) -> bool {
+    let num_ports = policy.num_ports;
+    if num_ports > 10 {
+        warn!(ctx, "Invalid num_ports in policy: {}", num_ports);
+        return false;
+    }
+
+    for i in 0..num_ports {
+        if policy.allowed_ports[i as usize] == port {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_download_tool(ctx: &LsmContext) -> Result<bool, i32> {

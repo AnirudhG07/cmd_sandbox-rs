@@ -1,0 +1,40 @@
+{
+  "policy_version": "1.0",
+  "command": "curl",
+  "network_policies": {
+    "allowed_domains": [
+      "example.com",
+      "iisc.ac.in",
+      "trusted.org"
+    ],
+    "allowed_ports": [53, 443],
+    "max_connections": 3,
+    "connection_timeout": 30,
+    "block_private_ips": true,
+    "blocked_protocols": ["ftp", "sftp", "telnet"]
+  },
+  "filesystem_policies": {
+    "allowed_write_dirs": ["/tmp/curl_downloads/"],
+    "allowed_read_dirs": ["~"],
+    "max_file_size": 10485760,
+    "max_total_storage": 52428800,
+    "blocked_paths": ["/etc/", "/bin/", "/sbin/", "/usr/"],
+    "prevent_execution": true
+  },
+  "memory_policies": {
+    "max_memory": 10485760,
+    "max_stack_size": 8388608,
+    "max_cpu_time": 10,
+    "cpu_limit_percent": 50,
+    "block_fork_exec": true,
+    "block_executable_mmap": true
+  },
+  "security_policies": {
+    "run_as_user": "nobody",
+    "blocked_environment": ["PASSWORD", "KEY", "SECRET"],
+    "allowed_signals": ["TERM", "INT"],
+    "isolate_network": true,
+    "block_kernel_memory": true,
+    "block_network_admin": true
+  }
+}

@@ -1,4 +1,6 @@
-use aya::{Btf, programs::Lsm};
+use aya::{Btf, programs::Lsm, maps::Array};
+use aya::util::online_cpus;
+use cmd_sandbox_common::policy_shared::NetworkPolicy;
 #[rustfmt::skip]
 use log::{debug, info, warn};
 use tokio::signal;
@@ -8,15 +10,28 @@ use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+mod policy;
+use policy::PolicyConfig;
+
 const CGROUP_BASE: &str = "/sys/fs/cgroup";
 const CGROUP_NAME: &str = "cmd_sandbox";
-const MEMORY_LIMIT: &str = "10M";  // 10 MB
-const CPU_TIME_LIMIT_US: &str = "2000000 1000000";  // 2 seconds CPU time per 1 second period
-const WALL_CLOCK_LIMIT: Duration = Duration::from_secs(10);  // 10 seconds wall clock time
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
+
+    // Load policy configuration
+    let config = PolicyConfig::default()?;
+    config.validate()?;
+    
+    println!("✓ Loaded policy configuration (version {})", config.policy_version);
+    println!("  Target command: {}", config.command);
+    println!("  Memory limit: {}MB", config.memory_policies.max_memory / (1024 * 1024));
+    println!("  CPU limit: {}%", config.memory_policies.cpu_limit_percent);
+    println!("  Wall clock timeout: {}s", config.memory_policies.max_cpu_time);
+    println!("  Allowed ports: {:?}", config.network_policies.allowed_ports);
+    println!("  Block private IPs: {}", config.network_policies.block_private_ips);
+    println!();
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -56,22 +71,27 @@ async fn main() -> anyhow::Result<()> {
     }
     let btf = Btf::from_sys_fs()?;
     
-    // Attach socket_connect LSM hook (HTTPS-only policy)
+    // Attach socket_connect LSM hook and populate policy map
     let program: &mut Lsm = ebpf.program_mut("socket_connect").unwrap().try_into()?;
     program.load("socket_connect", &btf)?;
     program.attach()?;
-    println!("✓ socket_connect LSM hook attached (HTTPS-only policy)");
+    
+    // Populate network policy map from configuration
+    populate_network_policy(&mut ebpf, &config)?;
+    
+    println!("✓ socket_connect LSM hook attached with policy from config");
 
     // Setup cgroup for resource limits
-    setup_cgroup()?;
+    setup_cgroup(&config)?;
     
     // Shared state for tracking process start times
+    let wall_clock_limit = Duration::from_secs(config.memory_policies.max_cpu_time as u64);
     let process_tracker: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
     
     // Spawn task to monitor and limit curl/wget processes
     let tracker_clone = Arc::clone(&process_tracker);
     tokio::spawn(async move {
-        monitor_processes(tracker_clone).await;
+        monitor_processes(tracker_clone, wall_clock_limit).await;
     });
 
     let ctrl_c = signal::ctrl_c();
@@ -85,7 +105,38 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn setup_cgroup() -> anyhow::Result<()> {
+fn populate_network_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> anyhow::Result<()> {
+    let mut network_policy_map: Array<_, NetworkPolicy> = 
+        Array::try_from(ebpf.map_mut("NETWORK_POLICY").unwrap())?;
+
+    // Create network policy struct from config
+    let mut allowed_ports = [0u16; 10];
+    let num_ports = config.network_policies.allowed_ports.len().min(10);
+    
+    for (i, &port) in config.network_policies.allowed_ports.iter().take(10).enumerate() {
+        allowed_ports[i] = port;
+    }
+
+    let policy = NetworkPolicy {
+        allowed_ports,
+        num_ports: num_ports as u32,
+        block_private_ips: if config.network_policies.block_private_ips { 1 } else { 0 },
+        max_connections: config.network_policies.max_connections,
+        connection_timeout: config.network_policies.connection_timeout,
+    };
+
+    // Write policy to map
+    network_policy_map.set(0, policy, 0)?;
+    
+    println!("✓ Network policy loaded into eBPF map:");
+    println!("  Allowed ports: {:?}", &allowed_ports[..num_ports]);
+    println!("  Block private IPs: {}", config.network_policies.block_private_ips);
+    println!("  Max connections: {}", config.network_policies.max_connections);
+    
+    Ok(())
+}
+
+fn setup_cgroup(config: &PolicyConfig) -> anyhow::Result<()> {
     let cgroup_path = format!("{}/{}", CGROUP_BASE, CGROUP_NAME);
     
     // Create cgroup if it doesn't exist
@@ -102,14 +153,16 @@ fn setup_cgroup() -> anyhow::Result<()> {
     
     // Set memory limit
     let memory_max = format!("{}/memory.max", cgroup_path);
-    fs::write(&memory_max, MEMORY_LIMIT)?;
-    println!("✓ Memory limit set: {} (cgroup)", MEMORY_LIMIT);
+    let memory_limit = format!("{}", config.memory_policies.max_memory);
+    fs::write(&memory_max, &memory_limit)?;
+    println!("✓ Memory limit set: {}MB (cgroup)", config.memory_policies.max_memory / (1024 * 1024));
     
     // Set CPU time limit
     let cpu_max = format!("{}/cpu.max", cgroup_path);
-    fs::write(&cpu_max, CPU_TIME_LIMIT_US)?;
-    println!("✓ CPU time limit set: 2 seconds (cgroup)");
-    println!("✓ Wall clock timeout: 10 seconds");
+    let cpu_limit = config.get_cpu_limit_string();
+    fs::write(&cpu_max, &cpu_limit)?;
+    println!("✓ CPU limit set: {}% of one core (cgroup)", config.memory_policies.cpu_limit_percent);
+    println!("✓ Wall clock timeout: {}s", config.memory_policies.max_cpu_time);
     
     Ok(())
 }
@@ -120,7 +173,7 @@ fn cleanup_cgroup() {
     info!("Cleaned up cgroup");
 }
 
-async fn monitor_processes(process_tracker: Arc<Mutex<HashMap<String, Instant>>>) {
+async fn monitor_processes(process_tracker: Arc<Mutex<HashMap<String, Instant>>>, wall_clock_limit: Duration) {
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     
     loop {
@@ -143,8 +196,9 @@ async fn monitor_processes(process_tracker: Arc<Mutex<HashMap<String, Instant>>>
                                 
                                 if let Some(start_time) = tracker.get(&pid) {
                                     // Check if it exceeded wall clock limit
-                                    if start_time.elapsed() > WALL_CLOCK_LIMIT {
-                                        info!("Killing {} (PID {}) - exceeded 10s wall clock limit", comm, pid);
+                                    if start_time.elapsed() > wall_clock_limit {
+                                        info!("Killing {} (PID {}) - exceeded {}s wall clock limit", 
+                                              comm, pid, wall_clock_limit.as_secs());
                                         kill_process(&pid);
                                         tracker.remove(&pid);
                                     }
@@ -181,7 +235,7 @@ fn move_to_cgroup(pid: &str) {
     let cgroup_procs = format!("{}/{}/cgroup.procs", CGROUP_BASE, CGROUP_NAME);
     match fs::write(&cgroup_procs, pid) {
         Ok(_) => {
-            info!("✓ Moved PID {} to limited cgroup (10MB memory, 2s CPU time, 10s wall clock)", pid);
+            info!("✓ Moved PID {} to limited cgroup (policy-enforced limits)", pid);
         }
         Err(e) => {
             warn!("Failed to move PID {} to cgroup: {}", pid, e);

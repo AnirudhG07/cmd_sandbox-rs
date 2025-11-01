@@ -4,6 +4,7 @@ members = [
     "cmd-sandbox",
     "cmd-sandbox-common",
     "cmd-sandbox-ebpf",
+    "cmd-sandbox-tests",
 ]
 default-members = ["cmd-sandbox", "cmd-sandbox-common"]
 
