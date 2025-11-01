@@ -11,10 +11,16 @@ use aya_ebpf::{
 use aya_log_ebpf::{info, warn};
 
 const CURL_COMM: &[u8; 4] = b"curl";
+const WGET_COMM: &[u8; 4] = b"wget";
 const AF_UNIX: u16 = 1;  // Unix domain sockets (local only)
 const AF_INET: u16 = 2;
 const AF_INET6: u16 = 10;
 const HTTPS_PORT: u16 = 443;
+const DNS_PORT: u16 = 53;  // DNS for name resolution
+
+// Resource limits
+const MAX_MEMORY_BYTES: u64 = 1024 * 1024; // 1MB
+const MAX_CPU_SECONDS: u64 = 30; // 30 seconds
 
 #[repr(C)]
 struct SockaddrIn {
@@ -42,11 +48,11 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
 }
 
 fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
-    if !is_curl(ctx)? {
+    if !is_download_tool(ctx)? {
         return Ok(0);
     }
 
-    info!(ctx, "curl socket_connect intercepted");
+    info!(ctx, "curl/wget socket_connect intercepted");
 
     // Get the sockaddr pointer from LSM context (second argument)
     let sockaddr_ptr = unsafe { ctx.arg::<*const c_void>(1) };
@@ -61,10 +67,13 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
             match read_port_v4(sockaddr_ptr) {
                 Ok(port) => {
                     if port == HTTPS_PORT {
-                        info!(ctx, "curl ALLOWED: HTTPS port {}", port);
+                        info!(ctx, "✅ curl ALLOWED: HTTPS port {}", port);
+                        return Ok(0);
+                    } else if port == DNS_PORT {
+                        info!(ctx, "✅ curl ALLOWED: DNS port {}", port);
                         return Ok(0);
                     } else {
-                        warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted HTTP connection on port {}", port);
+                        warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {}", port);
                         return Err(-1); // -EPERM (Operation not permitted)
                     }
                 }
@@ -80,8 +89,11 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
                     if port == HTTPS_PORT {
                         info!(ctx, "curl ALLOWED: HTTPS port {} (IPv6)", port);
                         return Ok(0);
+                    } else if port == DNS_PORT {
+                        info!(ctx, "curl ALLOWED: DNS port {} (IPv6)", port);
+                        return Ok(0);
                     } else {
-                        warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted HTTP connection on port {} (IPv6)", port);
+                        warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {} (IPv6)", port);
                         return Err(-1); // -EPERM (Operation not permitted)
                     }
                 }
@@ -107,7 +119,7 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
     }
 }
 
-fn is_curl(ctx: &LsmContext) -> Result<bool, i32> {
+fn is_download_tool(ctx: &LsmContext) -> Result<bool, i32> {
     let comm = match bpf_get_current_comm() {
         Ok(comm) => comm,
         Err(ret) => {
@@ -116,14 +128,17 @@ fn is_curl(ctx: &LsmContext) -> Result<bool, i32> {
         }
     };
 
-    if &comm[..CURL_COMM.len()] != CURL_COMM {
-        return Ok(false);
+    // Check for curl
+    if &comm[..CURL_COMM.len()] == CURL_COMM && comm[CURL_COMM.len()] == 0 {
+        return Ok(true);
     }
-    if comm[CURL_COMM.len()] != 0 {
-        return Ok(false);
+    
+    // Check for wget
+    if &comm[..WGET_COMM.len()] == WGET_COMM && comm[WGET_COMM.len()] == 0 {
+        return Ok(true);
     }
 
-    Ok(true)
+    Ok(false)
 }
 
 fn read_family(sockaddr_ptr: *const c_void) -> Result<u16, i32> {

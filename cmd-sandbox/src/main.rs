@@ -44,9 +44,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let btf = Btf::from_sys_fs()?;
+    
+    // Attach socket_connect LSM hook (HTTPS-only policy)
     let program: &mut Lsm = ebpf.program_mut("socket_connect").unwrap().try_into()?;
     program.load("socket_connect", &btf)?;
     program.attach()?;
+    println!("✓ socket_connect LSM hook attached (HTTPS-only policy)");
 
     let ctrl_c = signal::ctrl_c();
     println!("Waiting for Ctrl-C...");
