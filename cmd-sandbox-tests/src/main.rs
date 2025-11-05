@@ -225,11 +225,20 @@ async fn main() -> Result<()> {
     println!("{}", "═".repeat(70));
     println!();
 
-    // SEC-002: Environment Variable Controls
-    println!("{}", "▶ SEC-002: Block Dangerous Environment Variables".bold());
-    sec_tests::test_sec002_block_ld_preload(&mut suite).await;
-    sec_tests::test_sec002_block_ld_library_path(&mut suite).await;
-    sec_tests::test_sec002_sandbox_logs(&mut suite).await;
+    // SEC-001: Run as non-privileged user
+    println!("{}", "▶ SEC-001: Run as Non-Privileged User (nobody)".bold());
+    sec_tests::test_sec001_run_as_nobody(&mut suite).await;
+
+    // SEC-002: Environment Variable Controls (PASSWORD/KEY/SECRET)
+    println!("{}", "▶ SEC-002: Block Sensitive Environment Variables (PASSWORD/KEY/SECRET)".bold());
+    sec_tests::test_sec002_block_password_env(&mut suite).await;
+    sec_tests::test_sec002_block_key_env(&mut suite).await;
+    sec_tests::test_sec002_block_secret_env(&mut suite).await;
+
+    // Additional Security Tests (LD_PRELOAD/LD_LIBRARY_PATH)
+    println!("{}", "▶ SEC-EXTRA: Block Dangerous Loader Variables".bold());
+    sec_tests::test_sec_block_ld_preload(&mut suite).await;
+    sec_tests::test_sec_block_ld_library_path(&mut suite).await;
 
     // ========================================================================
     // FILESYSTEM POLICIES (FS-001 to FS-006) - NOT YET WORKING

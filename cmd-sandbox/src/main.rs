@@ -316,7 +316,8 @@ async fn monitor_processes(process_tracker: Arc<Mutex<HashMap<String, Instant>>>
                                     drop(tracker); // Release lock before potentially slow operations
                                     
                                     // Clean dangerous environment variables (SEC-002)
-                                    clean_process_environment(&pid, &["LD_PRELOAD", "LD_LIBRARY_PATH", "PATH"]);
+                                    // SEC-002: Block environment variables containing PASSWORD, KEY, SECRET
+                                    check_sensitive_environment(&pid);
                                     
                                     // Check if already in our cgroup
                                     let cgroup_file = format!("/proc/{}/cgroup", pid);
@@ -363,6 +364,43 @@ fn kill_process(pid: &str) {
 }
 
 // SEC-002: Clean dangerous environment variables from a process
+// SEC-002: Check and log sensitive environment variables containing PASSWORD, KEY, SECRET
+fn check_sensitive_environment(pid: &str) {
+    // Read the process environment
+    let env_path = format!("/proc/{}/environ", pid);
+    match fs::read(&env_path) {
+        Ok(bytes) => {
+            let env_str = String::from_utf8_lossy(&bytes);
+            let sensitive_vars: Vec<&str> = env_str
+                .split('\0')
+                .filter(|s| {
+                    let upper = s.to_uppercase();
+                    (upper.contains("PASSWORD") || upper.contains("KEY") || upper.contains("SECRET")) 
+                    && s.contains('=')
+                })
+                .collect();
+            
+            if !sensitive_vars.is_empty() {
+                warn!("SEC-002 VIOLATION: PID {} has sensitive environment variables:", pid);
+                for var in &sensitive_vars {
+                    // Only log the variable name, not the value (for security)
+                    if let Some(name) = var.split('=').next() {
+                        warn!("  - {}", name);
+                    }
+                }
+                warn!("Policy: These variables should be removed before process execution");
+                warn!("Note: Full enforcement requires wrapper script or custom process spawning");
+            } else {
+                info!("✓ SEC-002: No sensitive environment variables detected for PID {}", pid);
+            }
+        }
+        Err(e) => {
+            // Process may have terminated
+            debug!("Could not read environment for PID {}: {}", pid, e);
+        }
+    }
+}
+
 fn clean_process_environment(pid: &str, blocked_vars: &[&str]) {
     // Note: We cannot directly modify another process's environment variables from userspace
     // This function serves as documentation of the policy
