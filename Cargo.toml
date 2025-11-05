@@ -6,7 +6,8 @@ members = [
     "cmd-sandbox-ebpf",
     "cmd-sandbox-tests",
 ]
-default-members = ["cmd-sandbox", "cmd-sandbox-common"]
+# Note: cmd-sandbox-ebpf is compiled separately for eBPF target by cmd-sandbox's build.rs
+default-members = ["cmd-sandbox", "cmd-sandbox-common", "cmd-sandbox-tests"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"

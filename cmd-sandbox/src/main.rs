@@ -76,6 +76,25 @@ async fn main() -> anyhow::Result<()> {
     program.load("socket_connect", &btf)?;
     program.attach()?;
     
+    // Attach file_mmap LSM hook for MEM-005 (block executable mmap)
+    // Note: This may not be available on all kernels
+    if let Some(program) = ebpf.program_mut("file_mmap") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("file_mmap", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ file_mmap LSM attached (MEM-005: block executable mappings)");
+                }
+                Err(_) => {
+                    println!("⚠ file_mmap LSM not available on this kernel (MEM-005 not enforced)");
+                }
+            }
+        }
+    } else {
+        println!("⚠ file_mmap LSM not found (MEM-005 not enforced)");
+    }
+    
     // Attach tracepoint for openat syscall to restrict file writes
     let program: &mut TracePoint = ebpf.program_mut("sys_enter_openat").unwrap().try_into()?;
     program.load()?;

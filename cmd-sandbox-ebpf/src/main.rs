@@ -337,6 +337,53 @@ fn is_download_tool_tp(ctx: &TracePointContext) -> Result<bool, i32> {
     Ok(&comm[..4] == CURL_COMM || &comm[..4] == WGET_COMM)
 }
 
+// ============================================================================
+// MEM-005: Block memory mapping of executable pages
+// ============================================================================
+// LSM hook for file_mmap - prevents mmap with PROT_EXEC
+#[lsm(hook = "file_mmap")]
+pub fn file_mmap(ctx: LsmContext) -> i32 {
+    match try_file_mmap(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_file_mmap(ctx: &LsmContext) -> Result<i32, i32> {
+    // Check if this is curl or wget
+    let comm = bpf_get_current_comm().map_err(|_| 0)?;
+    
+    if &comm[..4] != CURL_COMM && &comm[..4] != WGET_COMM {
+        return Ok(0); // Not our target process
+    }
+    
+    // file_mmap LSM hook signature:
+    // int security_file_mmap(struct file *file, unsigned long reqprot,
+    //                        unsigned long prot, unsigned long flags,
+    //                        unsigned long addr, unsigned long addr_only);
+    //
+    // ctx.arg(0) = file pointer (we don't use)
+    // ctx.arg(1) = reqprot (requested protection)
+    // ctx.arg(2) = prot (actual protection flags)
+    // ctx.arg(3) = flags
+    // ctx.arg(4) = addr
+    // ctx.arg(5) = addr_only
+    
+    let prot = unsafe { ctx.arg::<u64>(2) };
+    
+    // PROT_EXEC = 0x4 (from <sys/mman.h>)
+    const PROT_EXEC: u64 = 0x4;
+    
+    // Check if PROT_EXEC is set
+    if prot & PROT_EXEC != 0 {
+        // Block executable mappings
+        warn!(ctx, "MEM-005: 🚫 BLOCKED executable mmap for curl/wget");
+        return Err(-13); // -EACCES
+    }
+    
+    Ok(0)
+}
+
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

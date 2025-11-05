@@ -209,6 +209,10 @@ async fn main() -> Result<()> {
     println!("{}", "▶ MEM-004: CPU Throttling (50%)".bold());
     mem_tests::test_mem004_cpu_throttling(&mut suite).await;
 
+    // MEM-005: Block Executable Memory Mapping
+    println!("{}", "▶ MEM-005: Block Executable Memory Mapping".bold());
+    mem_tests::test_mem005_block_exec_mmap(&mut suite).await;
+
     // MEM-006: Stack Size Limit
     println!("{}", "▶ MEM-006: Stack Size Limit (8MB)".bold());
     mem_tests::test_mem006_stack_size_limit(&mut suite).await;
