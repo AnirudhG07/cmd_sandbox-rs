@@ -181,11 +181,10 @@ async fn main() -> Result<()> {
     net_tests::test_net005_block_172_16(&mut suite).await;
     net_tests::test_net005_block_loopback(&mut suite).await;
 
-    // NET-004: Concurrent Connection Limit
-    println!("{}", "▶ NET-004: Concurrent Connection Limit".bold());
-    net_tests::test_net004_within_limit(&mut suite).await;
-    net_tests::test_net004_at_limit(&mut suite).await;
-    net_tests::test_net004_exceed_limit(&mut suite).await;
+    // NET-001: Domain Whitelist
+    println!("{}", "▶ NET-001: Domain Whitelist".bold());
+    net_tests::test_net001_whitelisted_domain(&mut suite).await;
+    net_tests::test_net001_non_whitelisted_domain(&mut suite).await;
 
     // ========================================================================
     // MEMORY & PROCESS POLICIES (MEM-001 to MEM-004)

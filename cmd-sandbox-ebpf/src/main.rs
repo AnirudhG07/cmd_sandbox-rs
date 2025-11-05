@@ -4,7 +4,7 @@
 use core::ffi::c_void;
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_probe_read_kernel},
+    helpers::{bpf_get_current_comm, bpf_probe_read_kernel},
     macros::{lsm, map},
     maps::{Array, HashMap},
     programs::LsmContext,
@@ -22,9 +22,10 @@ const AF_INET6: u16 = 10;
 #[map]
 static NETWORK_POLICY: Array<NetworkPolicy> = Array::with_max_entries(1, 0);
 
-// eBPF map to track connection count per PID
+// eBPF map to store whitelisted IPs (IP address -> 1 if allowed)
+// Userspace will populate this based on DNS resolution of allowed domains
 #[map]
-static CONNECTION_COUNT: HashMap<u32, u32> = HashMap::with_max_entries(1024, 0);
+static WHITELISTED_IPS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
 #[repr(C)]
 struct SockaddrIn {
@@ -51,40 +52,6 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
     }
 }
 
-#[lsm(hook = "socket_release")]
-pub fn socket_release(ctx: LsmContext) -> i32 {
-    match try_socket_release(&ctx) {
-        Ok(ret) => ret,
-        Err(ret) => ret,
-    }
-}
-
-fn try_socket_release(ctx: &LsmContext) -> Result<i32, i32> {
-    if !is_download_tool(ctx)? {
-        return Ok(0);
-    }
-
-    // Get PID and decrement connection count
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let pid = (pid_tgid >> 32) as u32;
-
-    if let Some(current_count) = unsafe { CONNECTION_COUNT.get(&pid) }.copied() {
-        if current_count > 0 {
-            let new_count = current_count - 1;
-            if new_count == 0 {
-                // Remove entry if count reaches 0
-                let _ = CONNECTION_COUNT.remove(&pid);
-                info!(ctx, "Connection released for PID {}: {} -> 0 (removed)", pid, current_count);
-            } else {
-                let _ = CONNECTION_COUNT.insert(&pid, &new_count, 0);
-                info!(ctx, "Connection released for PID {}: {} -> {}", pid, current_count, new_count);
-            }
-        }
-    }
-
-    Ok(0)
-}
-
 fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
     if !is_download_tool(ctx)? {
         return Ok(0);
@@ -94,10 +61,6 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
 
     // Get network policy from map
     let policy = NETWORK_POLICY.get(0).ok_or(-1)?;
-
-    // Get PID for connection tracking
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let pid = (pid_tgid >> 32) as u32;
 
     // Get the sockaddr pointer from LSM context (second argument)
     let sockaddr_ptr = unsafe { ctx.arg::<*const c_void>(1) };
@@ -118,6 +81,12 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
                     // Allow DNS to local resolver (127.0.0.53 or similar) even if loopback is blocked
                     let is_dns_to_resolver = port == 53 && (ip & 0xFF) == 127;
                     
+                    // Check domain whitelist for non-DNS connections
+                    if port != 53 && !is_dns_to_resolver && !is_ip_whitelisted(ip) {
+                        warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection to non-whitelisted domain/IP");
+                        return Err(-1); // -EPERM
+                    }
+                    
                     // Check if private IP blocking is enabled and if IP is private
                     // Exception: allow DNS queries to local resolver
                     if !is_dns_to_resolver && policy.block_private_ips != 0 && is_private_ipv4(ip) {
@@ -129,23 +98,6 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
                     if !is_port_allowed(ctx, port, policy) {
                         warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {}", port);
                         return Err(-1); // -EPERM (Operation not permitted)
-                    }
-                    
-                    // Only count non-DNS connections towards the limit (after all checks pass)
-                    if port != 53 && policy.max_connections > 0 {
-                        let current_count = unsafe { CONNECTION_COUNT.get(&pid) }.copied().unwrap_or(0);
-                        
-                        if current_count >= policy.max_connections {
-                            warn!(ctx, "🚫 SANDBOX BLOCKED: curl exceeded max concurrent connections ({}/{})", 
-                                  current_count, policy.max_connections);
-                            return Err(-104); // -ECONNREFUSED
-                        }
-                        
-                        // Increment connection count only for allowed connections
-                        let new_count = current_count + 1;
-                        CONNECTION_COUNT.insert(&pid, &new_count, 0).map_err(|_| -1)?;
-                        
-                        info!(ctx, "Connection count for PID {}: {} -> {}", pid, current_count, new_count);
                     }
                     
                     info!(ctx, "✅ curl ALLOWED: port {}", port);
@@ -164,23 +116,6 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
                     if !is_port_allowed(ctx, port, policy) {
                         warn!(ctx, "🚫 SANDBOX BLOCKED: curl attempted connection on port {} (IPv6)", port);
                         return Err(-1); // -EPERM (Operation not permitted)
-                    }
-                    
-                    // Only count non-DNS connections towards the limit (after check passes)
-                    if port != 53 && policy.max_connections > 0 {
-                        let current_count = unsafe { CONNECTION_COUNT.get(&pid) }.copied().unwrap_or(0);
-                        
-                        if current_count >= policy.max_connections {
-                            warn!(ctx, "🚫 SANDBOX BLOCKED: curl exceeded max concurrent connections ({}/{})", 
-                                  current_count, policy.max_connections);
-                            return Err(-104); // -ECONNREFUSED
-                        }
-                        
-                        // Increment connection count only for allowed connections
-                        let new_count = current_count + 1;
-                        CONNECTION_COUNT.insert(&pid, &new_count, 0).map_err(|_| -1)?;
-                        
-                        info!(ctx, "Connection count for PID {}: {} -> {}", pid, current_count, new_count);
                     }
                     
                     info!(ctx, "✅ curl ALLOWED: port {} (IPv6)", port);
@@ -243,6 +178,11 @@ fn is_download_tool(ctx: &LsmContext) -> Result<bool, i32> {
     }
 
     Ok(false)
+}
+
+fn is_ip_whitelisted(ip: u32) -> bool {
+    // Check if IP is in the whitelist
+    unsafe { WHITELISTED_IPS.get(&ip) }.is_some()
 }
 
 fn read_family(sockaddr_ptr: *const c_void) -> Result<u16, i32> {

@@ -5,7 +5,8 @@
     "allowed_domains": [
       "example.com",
       "iisc.ac.in",
-      "trusted.org"
+      "trusted.org",
+      "ash-speed.hetzner.com"
     ],
     "allowed_ports": [53, 443],
     "max_connections": 3,

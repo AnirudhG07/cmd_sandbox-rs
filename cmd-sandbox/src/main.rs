@@ -133,6 +133,45 @@ fn populate_network_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> anyho
     println!("  Block private IPs: {}", config.network_policies.block_private_ips);
     println!("  Max connections: {}", config.network_policies.max_connections);
     
+    // Populate whitelisted IPs from allowed domains
+    populate_whitelisted_ips(ebpf, config)?;
+    
+    Ok(())
+}
+
+fn populate_whitelisted_ips(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> anyhow::Result<()> {
+    use std::net::ToSocketAddrs;
+    use aya::maps::HashMap;
+    
+    let mut whitelist_map: HashMap<_, u32, u8> = 
+        HashMap::try_from(ebpf.map_mut("WHITELISTED_IPS").unwrap())?;
+    
+    println!("✓ Resolving and whitelisting domains:");
+    
+    for domain in &config.network_policies.allowed_domains {
+        // Resolve domain to IPs using DNS
+        // We use port 443 as a dummy port for resolution
+        let addr_string = format!("{}:443", domain);
+        
+        match addr_string.to_socket_addrs() {
+            Ok(addrs) => {
+                for addr in addrs {
+                    if let std::net::IpAddr::V4(ipv4) = addr.ip() {
+                        let ip_u32 = u32::from(ipv4);
+                        // Convert to network byte order (big-endian) to match what eBPF sees
+                        let ip_be = ip_u32.to_be();
+                        
+                        whitelist_map.insert(ip_be, 1u8, 0)?;
+                        println!("  {} -> {} (0x{:08x})", domain, ipv4, ip_be);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("  ⚠️  Failed to resolve {}: {}", domain, e);
+            }
+        }
+    }
+    
     Ok(())
 }
 
