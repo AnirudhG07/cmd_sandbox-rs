@@ -4,13 +4,13 @@
 use core::ffi::c_void;
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_probe_read_kernel},
-    macros::{lsm, map},
+    helpers::{bpf_get_current_comm, bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes, bpf_probe_read_user_str_bytes},
+    macros::{lsm, map, tracepoint},
     maps::{Array, HashMap},
-    programs::LsmContext,
+    programs::{LsmContext, TracePointContext},
 };
 use aya_log_ebpf::{info, warn};
-use cmd_sandbox_common::policy_shared::NetworkPolicy;
+use cmd_sandbox_common::policy_shared::{NetworkPolicy, FilesystemPolicy};
 
 const CURL_COMM: &[u8; 4] = b"curl";
 const WGET_COMM: &[u8; 4] = b"wget";
@@ -26,6 +26,10 @@ static NETWORK_POLICY: Array<NetworkPolicy> = Array::with_max_entries(1, 0);
 // Userspace will populate this based on DNS resolution of allowed domains
 #[map]
 static WHITELISTED_IPS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
+
+// eBPF map to store filesystem policy configuration
+#[map]
+static FILESYSTEM_POLICY: Array<FilesystemPolicy> = Array::with_max_entries(1, 0);
 
 #[repr(C)]
 struct SockaddrIn {
@@ -243,6 +247,94 @@ fn is_private_ipv4(ip: u32) -> bool {
     }
     
     false
+}
+
+// Hook into openat syscall to intercept file writes
+#[tracepoint]
+pub fn sys_enter_openat(ctx: TracePointContext) -> i32 {
+    match try_sys_enter_openat(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_sys_enter_openat(ctx: &TracePointContext) -> Result<i32, i32> {
+    // Only check curl/wget processes
+    if !is_download_tool_tp(ctx)? {
+        return Ok(0);
+    }
+
+    // Read syscall arguments
+    // openat(int dfd, const char *filename, int flags, umode_t mode)
+    // args are at fixed offsets in the tracepoint context
+    
+    // Read filename pointer (second argument)
+    let filename_ptr: *const u8 = unsafe { 
+        ctx.read_at::<*const u8>(24).map_err(|_| 0)?  // offset 24 for filename on aarch64
+    };
+    
+    if filename_ptr.is_null() {
+        return Ok(0);
+    }
+
+    // Read flags (third argument)
+    let flags: i32 = unsafe {
+        ctx.read_at::<i32>(32).map_err(|_| 0)?  // offset 32 for flags
+    };
+
+    // Check if this is a write operation
+    // O_WRONLY = 1, O_RDWR = 2, O_CREAT = 64
+    const O_WRONLY: i32 = 0x0001;
+    const O_RDWR: i32 = 0x0002;
+    const O_CREAT: i32 = 0x0040;
+    const O_ACCMODE: i32 = 0x0003;
+    
+    let access_mode = flags & O_ACCMODE;
+    let has_creat = (flags & O_CREAT) != 0;
+    
+    if access_mode != O_WRONLY && access_mode != O_RDWR && !has_creat {
+        // Not a write operation
+        return Ok(0);
+    }
+
+    // Read the filename string from userspace
+    let mut filename_buf = [0u8; 256];
+    let filename_bytes = unsafe {
+        bpf_probe_read_user_str_bytes(filename_ptr, &mut filename_buf)
+            .map_err(|_| 0)?
+    };
+
+    // Get filesystem policy
+    let policy = FILESYSTEM_POLICY.get(0).ok_or(0)?;
+    if policy.path_len == 0 {
+        // No policy set, allow everything
+        return Ok(0);
+    }
+
+    // Check if the filename starts with the allowed path
+    let path_len = policy.path_len as usize;
+    if filename_bytes.len() < path_len {
+        // Path too short to match
+        warn!(ctx, "🚫 BLOCKED: Write to unauthorized path");
+        return Err(-13); // -EACCES
+    }
+
+    // Compare path prefix
+    for i in 0..path_len {
+        if filename_buf[i] != policy.allowed_write_path[i] {
+            warn!(ctx, "🚫 BLOCKED: Write to unauthorized path");
+            return Err(-13); // -EACCES
+        }
+    }
+
+    // Path matches allowed directory
+    Ok(0)
+}
+
+fn is_download_tool_tp(ctx: &TracePointContext) -> Result<bool, i32> {
+    let comm = bpf_get_current_comm().map_err(|_| 0)?;
+    
+    Ok(&comm[..4] == CURL_COMM || &comm[..4] == WGET_COMM)
 }
 
 #[cfg(not(test))]

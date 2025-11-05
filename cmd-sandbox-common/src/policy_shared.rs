@@ -23,3 +23,13 @@ pub struct DomainEntry {
 
 #[cfg(feature = "user")]
 unsafe impl Pod for DomainEntry {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FilesystemPolicy {
+    pub allowed_write_path: [u8; 256],  // Path prefix that's allowed for writes
+    pub path_len: u32,                   // Length of the path string
+}
+
+#[cfg(feature = "user")]
+unsafe impl Pod for FilesystemPolicy {}

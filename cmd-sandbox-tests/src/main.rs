@@ -9,6 +9,8 @@ use tokio::time::timeout;
 // Test modules organized by policy category
 mod net_tests;
 mod mem_tests;
+mod fs_tests;
+mod sec_tests;
 
 #[derive(Debug)]
 pub struct TestResult {
@@ -23,6 +25,7 @@ pub struct TestSuite {
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
+    pub skipped: usize,
 }
 
 impl TestSuite {
@@ -32,6 +35,7 @@ impl TestSuite {
             total: 0,
             passed: 0,
             failed: 0,
+            skipped: 0,
         }
     }
 
@@ -50,27 +54,44 @@ impl TestSuite {
         self.results.push(result);
     }
 
+    fn skip(&mut self, _name: &str) {
+        self.total += 1;
+        self.skipped += 1;
+    }
+
     fn print_summary(&self) {
-        println!("\n{}", "━".repeat(70));
-        println!("{}", "📋 Final Summary".bold());
-        println!("{}", "━".repeat(70));
+        println!("\n{}", "═".repeat(70));
+        println!("{}", "📋 FINAL TEST SUMMARY".bold().cyan());
+        println!("{}", "═".repeat(70));
         println!();
-        println!("Total Tests: {}", self.total);
-        println!("{}", format!("✅ Passed: {}", self.passed).green());
-        println!("{}", format!("❌ Failed: {}", self.failed).red());
+        println!("  Total Tests:   {}", self.total);
+        println!("  {}", format!("✅ Passed:      {}", self.passed).green().bold());
+        println!("  {}", format!("❌ Failed:      {}", self.failed).red().bold());
+        println!("  {}", format!("⊘  Skipped:     {}", self.skipped).yellow());
         println!();
 
-        if self.failed == 0 {
-            println!(
-                "{}",
-                "🎉 All tests PASSED! Sandbox is working correctly.".green().bold()
-            );
+        let pass_rate = if self.total - self.skipped > 0 {
+            (self.passed as f64 / (self.total - self.skipped) as f64) * 100.0
         } else {
+            0.0
+        };
+
+        println!("  Pass Rate: {:.1}%", pass_rate);
+        println!();
+
+        if self.failed == 0 && self.passed > 0 {
             println!(
-                "{}",
-                "⚠️  Some tests FAILED. Check output above for details.".yellow().bold()
+                "  {}",
+                "🎉 ALL TESTS PASSED! Sandbox is working correctly.".green().bold()
+            );
+        } else if self.failed > 0 {
+            println!(
+                "  {}",
+                "⚠️  SOME TESTS FAILED. Review output above for details.".red().bold()
             );
         }
+        println!();
+        println!("{}", "═".repeat(70));
     }
 }
 
@@ -94,51 +115,32 @@ fn get_cgroup_value(file: &str) -> Result<String> {
         .map(|s| s.trim().to_string())
 }
 
-async fn run_curl_command(args: &[&str], timeout_secs: u64) -> Result<(ExitStatus, Duration)> {
-    let start = Instant::now();
-    
-    let result = timeout(
-        Duration::from_secs(timeout_secs),
-        tokio::process::Command::new("curl")
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-    )
-    .await;
-
-    let duration = start.elapsed();
-
-    match result {
-        Ok(Ok(status)) => Ok((status, duration)),
-        Ok(Err(e)) => Err(e.into()),
-        Err(_) => {
-            // Timeout - try to get exit status anyway
-            Ok((ExitStatus::default(), duration))
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("{}", "╔════════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║       curl_sandbox-rs Comprehensive Test Suite (Rust)         ║".cyan());
-    println!("{}", "╚════════════════════════════════════════════════════════════════╝".cyan());
+    println!("{}", "╔════════════════════════════════════════════════════════════════╗".cyan().bold());
+    println!("{}", "║     curl_sandbox-rs - Comprehensive Security Test Suite       ║".cyan().bold());
+    println!("{}", "║                        Version 1.0                             ║".cyan().bold());
+    println!("{}", "╚════════════════════════════════════════════════════════════════╝".cyan().bold());
     println!();
 
-    // Check prerequisites
+    // ========================================================================
+    // PREREQUISITE CHECKS
+    // ========================================================================
+    println!("{}", "🔍 Checking Prerequisites...".bold().yellow());
+    println!();
+
     if !check_sandbox_running()? {
-        eprintln!("{}", "❌ ERROR: cmd-sandbox is not running!".red());
-        eprintln!("   Start it first: sudo -E RUST_LOG=info ./target/release/cmd-sandbox");
+        eprintln!("{}", "  ❌ ERROR: cmd-sandbox is not running!".red().bold());
+        eprintln!("     Start it first: sudo -E RUST_LOG=info ./target/release/cmd-sandbox");
         std::process::exit(1);
     }
-    println!("{}", "✓ Sandbox is running".green());
+    println!("{}", "  ✓ Sandbox process is running".green());
 
     if !check_cgroup_exists()? {
-        eprintln!("{}", "❌ ERROR: cgroup not found at /sys/fs/cgroup/cmd_sandbox".red());
+        eprintln!("{}", "  ❌ ERROR: cgroup not found at /sys/fs/cgroup/cmd_sandbox".red().bold());
         std::process::exit(1);
     }
-    println!("{}", "✓ Cgroup exists".green());
+    println!("{}", "  ✓ Cgroup exists".green());
     println!();
 
     // Display current limits
@@ -146,10 +148,10 @@ async fn main() -> Result<()> {
     println!("{}", "📊 Current Resource Limits".bold());
     println!("{}", "━".repeat(70));
     if let Ok(mem) = get_cgroup_value("memory.max") {
-        println!("Memory limit: {}", mem);
+        println!("  Memory limit: {}", mem);
     }
     if let Ok(cpu) = get_cgroup_value("cpu.max") {
-        println!("CPU limit: {}", cpu);
+        println!("  CPU limit: {}", cpu);
     }
     println!();
 
@@ -158,81 +160,86 @@ async fn main() -> Result<()> {
     // ========================================================================
     // NETWORK POLICIES (NET-001 to NET-006)
     // ========================================================================
-    println!("{}", "━".repeat(70));
+    println!("{}", "═".repeat(70));
     println!("{}", "🌐 NETWORK POLICIES".bold().cyan());
-    println!("{}", "━".repeat(70));
+    println!("{}", "═".repeat(70));
     println!();
-
-    // NET-006: HTTPS-Only Policy
-    println!("{}", "▶ NET-006: HTTPS-Only Policy".bold());
-    net_tests::test_net006_https_allowed(&mut suite).await;
-    net_tests::test_net006_http_blocked(&mut suite).await;
-
-    // NET-002: Protocol Blocking
-    println!("{}", "▶ NET-002: Protocol Blocking".bold());
-    net_tests::test_net002_ftp_blocked(&mut suite).await;
-    net_tests::test_net002_sftp_blocked(&mut suite).await;
-    net_tests::test_net002_telnet_blocked(&mut suite).await;
-
-    // NET-005: Private IP Blocking
-    println!("{}", "▶ NET-005: Private IP Blocking".bold());
-    net_tests::test_net005_block_192_168(&mut suite).await;
-    net_tests::test_net005_block_10_0(&mut suite).await;
-    net_tests::test_net005_block_172_16(&mut suite).await;
-    net_tests::test_net005_block_loopback(&mut suite).await;
 
     // NET-001: Domain Whitelist
     println!("{}", "▶ NET-001: Domain Whitelist".bold());
     net_tests::test_net001_whitelisted_domain(&mut suite).await;
     net_tests::test_net001_non_whitelisted_domain(&mut suite).await;
 
+    // NET-002: Protocol Blocking  
+    println!("{}", "▶ NET-002: Block Non-HTTP Protocols".bold());
+    net_tests::test_net002_ftp_blocked(&mut suite).await;
+    net_tests::test_net002_sftp_blocked(&mut suite).await;
+    net_tests::test_net002_telnet_blocked(&mut suite).await;
+
+    // NET-005: Private IP Blocking
+    println!("{}", "▶ NET-005: Block Private IP Ranges".bold());
+    net_tests::test_net005_block_192_168(&mut suite).await;
+    net_tests::test_net005_block_10_0(&mut suite).await;
+    net_tests::test_net005_block_172_16(&mut suite).await;
+    net_tests::test_net005_block_loopback(&mut suite).await;
+
+    // NET-006: HTTPS-Only Policy
+    println!("{}", "▶ NET-006: HTTPS-Only Enforcement".bold());
+    net_tests::test_net006_https_allowed(&mut suite).await;
+    net_tests::test_net006_http_blocked(&mut suite).await;
+
     // ========================================================================
-    // MEMORY & PROCESS POLICIES (MEM-001 to MEM-004)
+    // MEMORY & PROCESS POLICIES (MEM-001 to MEM-006)
     // ========================================================================
-    println!("{}", "━".repeat(70));
+    println!("{}", "═".repeat(70));
     println!("{}", "💾 MEMORY & PROCESS POLICIES".bold().cyan());
-    println!("{}", "━".repeat(70));
+    println!("{}", "═".repeat(70));
     println!();
 
     // MEM-001: Memory Limit
-    println!("{}", "▶ MEM-001: Memory Limit".bold());
+    println!("{}", "▶ MEM-001: Memory Limit (10MB)".bold());
     mem_tests::test_mem001_memory_limit(&mut suite).await;
 
     // MEM-003: Wall Clock Timeout
-    println!("{}", "▶ MEM-003: Wall Clock Timeout".bold());
+    println!("{}", "▶ MEM-003: Wall Clock Timeout (10s)".bold());
     mem_tests::test_mem003_wall_clock_timeout(&mut suite).await;
     mem_tests::test_mem003_quick_operation(&mut suite).await;
 
     // MEM-004: CPU Throttling
-    println!("{}", "▶ MEM-004: CPU Throttling".bold());
+    println!("{}", "▶ MEM-004: CPU Throttling (50%)".bold());
     mem_tests::test_mem004_cpu_throttling(&mut suite).await;
 
-    // ========================================================================
-    // FILESYSTEM POLICIES (FS-001 to FS-006) - TODO: Not yet implemented
-    // ========================================================================
-    println!("{}", "━".repeat(70));
-    println!("{}", "📁 FILESYSTEM POLICIES (Not Implemented)".bold().yellow());
-    println!("{}", "━".repeat(70));
-    println!("   FS-001: Write to /tmp only - TODO");
-    println!("   FS-002: Read-only filesystem outside /tmp - TODO");
-    println!("   FS-003: File size limits - TODO");
-    println!("   FS-004: Inode limits - TODO");
-    println!("   FS-005: Path traversal protection - TODO");
-    println!("   FS-006: Symlink restrictions - TODO");
-    println!();
+    // MEM-006: Stack Size Limit
+    println!("{}", "▶ MEM-006: Stack Size Limit (8MB)".bold());
+    mem_tests::test_mem006_stack_size_limit(&mut suite).await;
 
     // ========================================================================
-    // SECURITY POLICIES (SEC-001 to SEC-006) - TODO: Not yet implemented
+    // SECURITY POLICIES (SEC-001 to SEC-006)
     // ========================================================================
-    println!("{}", "━".repeat(70));
-    println!("{}", "🔒 SECURITY POLICIES (Not Implemented)".bold().yellow());
-    println!("{}", "━".repeat(70));
-    println!("   SEC-001: No privilege escalation - TODO");
-    println!("   SEC-002: No ptrace - TODO");
-    println!("   SEC-003: No kernel module loading - TODO");
-    println!("   SEC-004: Seccomp filter - TODO");
-    println!("   SEC-005: Capability dropping - TODO");
-    println!("   SEC-006: Namespace isolation - TODO");
+    println!("{}", "═".repeat(70));
+    println!("{}", "� SECURITY POLICIES".bold().cyan());
+    println!("{}", "═".repeat(70));
+    println!();
+
+    // SEC-002: Environment Variable Controls
+    println!("{}", "▶ SEC-002: Block Dangerous Environment Variables".bold());
+    sec_tests::test_sec002_block_ld_preload(&mut suite).await;
+    sec_tests::test_sec002_block_ld_library_path(&mut suite).await;
+    sec_tests::test_sec002_sandbox_logs(&mut suite).await;
+
+    // ========================================================================
+    // FILESYSTEM POLICIES (FS-001 to FS-006) - NOT YET WORKING
+    // ========================================================================
+    println!("{}", "═".repeat(70));
+    println!("{}", "� FILESYSTEM POLICIES (Implementation Pending)".bold().yellow());
+    println!("{}", "═".repeat(70));
+    println!();
+    println!("  FS-001: Write directory restrictions - TODO (tracepoint not working)");
+    println!("  FS-002: Read-only filesystem - TODO");
+    println!("  FS-003: File size limits - TODO");
+    println!("  FS-004: Inode limits - TODO");
+    println!("  FS-005: Path traversal protection - TODO");
+    println!("  FS-006: Symlink restrictions - TODO");
     println!();
 
     // Print summary

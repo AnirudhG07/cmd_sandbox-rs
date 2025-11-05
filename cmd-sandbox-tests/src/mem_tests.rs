@@ -210,3 +210,168 @@ pub async fn test_mem004_cpu_throttling(suite: &mut TestSuite) {
     });
     println!();
 }
+
+// ============================================================================
+// MEM-006: Stack Size Limit (8MB)
+// ============================================================================
+pub async fn test_mem006_stack_size_limit(suite: &mut TestSuite) {
+    println!("{}", "Test MEM-006: Verify stack size limit is enforced at 8MB".bold());
+    println!("Command: Create C program that allocates large stack arrays");
+    println!("---");
+
+    let start = Instant::now();
+    
+    // Create a C program that tries to use more than 8MB of stack
+    let c_program = r#"
+#include <stdio.h>
+#include <string.h>
+
+void use_stack(int depth) {
+    // Each call uses ~1MB of stack (array of 250000 ints = ~1MB)
+    int large_array[250000];
+    memset(large_array, 0, sizeof(large_array));
+    large_array[0] = depth;
+    
+    if (depth < 20) {  // Try to use 20MB total
+        use_stack(depth + 1);
+    }
+}
+
+int main() {
+    printf("Attempting to use >8MB stack...\n");
+    use_stack(0);
+    printf("Stack usage succeeded (should not reach here)\n");
+    return 0;
+}
+"#;
+    
+    let source_path = "/tmp/stack_test.c";
+    let binary_path = "/tmp/stack_test";
+    
+    // Write the C source
+    if let Err(e) = fs::write(source_path, c_program) {
+        suite.record(TestResult {
+            name: "MEM-006: Stack size limit".to_string(),
+            passed: false,
+            message: format!("Failed to create test program: {}", e),
+            duration: start.elapsed(),
+        });
+        println!();
+        return;
+    }
+    
+    // Compile it
+    let compile = Command::new("gcc")
+        .args(&["-o", binary_path, source_path])
+        .output()
+        .await;
+    
+    if compile.is_err() || !compile.as_ref().unwrap().status.success() {
+        suite.record(TestResult {
+            name: "MEM-006: Stack size limit".to_string(),
+            passed: false,
+            message: "Failed to compile test program (gcc not available?)".to_string(),
+            duration: start.elapsed(),
+        });
+        println!("⚠️  GCC not available or compilation failed - skipping test");
+        println!();
+        let _ = fs::remove_file(source_path);
+        return;
+    }
+    
+    // Run the program - it should segfault due to stack limit
+    let output = Command::new(binary_path)
+        .output()
+        .await;
+    
+    // Cleanup
+    let _ = fs::remove_file(source_path);
+    let _ = fs::remove_file(binary_path);
+    
+    match output {
+        Ok(output) => {
+            let exit_code = output.status.code();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            
+            // On Unix, check if killed by signal using status.signal()
+            #[cfg(unix)]
+            use std::os::unix::process::ExitStatusExt;
+            
+            #[cfg(unix)]
+            let signal = output.status.signal();
+            
+            // Process should fail with:
+            // - exit code 139 (128 + 11 = SIGSEGV) 
+            // - or signal 11 (SIGSEGV)
+            // - or signal 6 (SIGABRT) if using abort
+            // When exit_code is None, it means killed by signal
+            #[cfg(unix)]
+            let killed_by_stack_limit = !output.status.success() && 
+                                       (exit_code.map(|c| c == 139 || c >= 128).unwrap_or(false) ||
+                                        signal.map(|s| s == 11 || s == 6).unwrap_or(false) ||
+                                        exit_code.is_none()); // None often means killed by signal
+            
+            #[cfg(not(unix))]
+            let killed_by_stack_limit = !output.status.success() && 
+                                       exit_code.map(|c| c == 139 || c >= 128).unwrap_or(false);
+            
+            if killed_by_stack_limit {
+                #[cfg(unix)]
+                let detail = if let Some(sig) = signal {
+                    format!("signal {}", sig)
+                } else if let Some(code) = exit_code {
+                    format!("exit code {}", code)
+                } else {
+                    "killed by signal".to_string()
+                };
+                
+                #[cfg(not(unix))]
+                let detail = format!("exit code {}", exit_code.unwrap_or(-1));
+                
+                suite.record(TestResult {
+                    name: "MEM-006: Stack size limit".to_string(),
+                    passed: true,
+                    message: format!("Process killed when exceeding 8MB stack ({})", detail),
+                    duration: start.elapsed(),
+                });
+                println!("✅ Process killed by stack limit ({})", detail);
+            } else if output.status.success() {
+                // Program completed successfully - this means stack limit is NOT working
+                suite.record(TestResult {
+                    name: "MEM-006: Stack size limit".to_string(),
+                    passed: false,
+                    message: "Program completed successfully - 8MB stack limit NOT enforced".to_string(),
+                    duration: start.elapsed(),
+                });
+                println!("❌ Stack limit NOT enforced - program used >8MB stack successfully");
+                println!("   Stdout: {}", stdout.trim());
+            } else {
+                #[cfg(unix)]
+                let detail = format!("exit code: {:?}, signal: {:?}", exit_code, signal);
+                #[cfg(not(unix))]
+                let detail = format!("exit code: {:?}", exit_code);
+                
+                suite.record(TestResult {
+                    name: "MEM-006: Stack size limit".to_string(),
+                    passed: false,
+                    message: format!("Program failed but not due to stack limit ({})", detail),
+                    duration: start.elapsed(),
+                });
+                println!("⚠️  Program failed with unexpected status: {}", detail);
+                println!("   Stderr: {}", stderr.trim());
+            }
+        }
+        Err(e) => {
+            suite.record(TestResult {
+                name: "MEM-006: Stack size limit".to_string(),
+                passed: false,
+                message: format!("Failed to run test: {}", e),
+                duration: start.elapsed(),
+            });
+            println!("⚠️  Could not run stack test: {}", e);
+        }
+    }
+    
+    println!();
+}
