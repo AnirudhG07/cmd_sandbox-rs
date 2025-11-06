@@ -235,6 +235,23 @@ async fn main() -> Result<()> {
     sec_tests::test_sec002_block_key_env(&mut suite).await;
     sec_tests::test_sec002_block_secret_env(&mut suite).await;
 
+
+    // SEC-003: Prevent network interface configuration changes
+    println!("{}", "▶ SEC-003: Prevent Network Interface Configuration".bold());
+    sec_tests::test_sec003_block_net_admin(&mut suite).await;
+
+    // SEC-004: Restrict signal handling (TERM, INT only)
+    println!("{}", "▶ SEC-004: Restrict Signal Handling (TERM/INT only)".bold());
+    sec_tests::test_sec004_allow_sigterm(&mut suite).await;
+    sec_tests::test_sec004_allow_sigint(&mut suite).await;
+    sec_tests::test_sec004_block_other_signals(&mut suite).await;
+
+    // SEC-005: Block kernel memory and module access
+    println!("{}", "▶ SEC-005: Block Kernel Memory/Module Access".bold());
+    sec_tests::test_sec005_block_kernel_access(&mut suite).await;
+    sec_tests::test_sec005_block_module_loading(&mut suite).await;
+
+
     // Additional Security Tests (LD_PRELOAD/LD_LIBRARY_PATH)
     println!("{}", "▶ SEC-EXTRA: Block Dangerous Loader Variables".bold());
     sec_tests::test_sec_block_ld_preload(&mut suite).await;

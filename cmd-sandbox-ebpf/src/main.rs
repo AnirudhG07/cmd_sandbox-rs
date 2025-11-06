@@ -4,7 +4,7 @@
 use core::ffi::c_void;
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes, bpf_probe_read_user_str_bytes},
+    helpers::{bpf_get_current_comm, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes},
     macros::{lsm, map, tracepoint},
     maps::{Array, HashMap},
     programs::{LsmContext, TracePointContext},
@@ -61,7 +61,24 @@ fn try_socket_connect(ctx: &LsmContext) -> Result<i32, i32> {
         return Ok(0);
     }
 
-    info!(ctx, "curl/wget socket_connect intercepted");
+    // SEC-001: Block curl/wget if running as root (UID=0) or privileged user
+    let uid_gid = aya_ebpf::helpers::bpf_get_current_uid_gid();
+    let uid = (uid_gid & 0xFFFFFFFF) as u32;
+    
+    const UID_NOBODY: u32 = 65534;
+    const UID_MIN_UNPRIVILEGED: u32 = 1000;
+    
+    if uid == 0 {
+        warn!(ctx, "SEC-001: 🚫 BLOCKED curl/wget running as root (UID=0)");
+        return Err(-1); // -EPERM
+    }
+    
+    if uid < UID_MIN_UNPRIVILEGED && uid != UID_NOBODY {
+        warn!(ctx, "SEC-001: 🚫 BLOCKED curl/wget running as privileged user (UID={})", uid);
+        return Err(-1); // -EPERM
+    }
+
+    info!(ctx, "curl/wget socket_connect intercepted (UID={})", uid);
 
     // Get network policy from map
     let policy = NETWORK_POLICY.get(0).ok_or(-1)?;
@@ -331,7 +348,7 @@ fn try_sys_enter_openat(ctx: &TracePointContext) -> Result<i32, i32> {
     Ok(0)
 }
 
-fn is_download_tool_tp(ctx: &TracePointContext) -> Result<bool, i32> {
+fn is_download_tool_tp(_ctx: &TracePointContext) -> Result<bool, i32> {
     let comm = bpf_get_current_comm().map_err(|_| 0)?;
     
     Ok(&comm[..4] == CURL_COMM || &comm[..4] == WGET_COMM)
@@ -381,6 +398,237 @@ fn try_file_mmap(ctx: &LsmContext) -> Result<i32, i32> {
         return Err(-13); // -EACCES
     }
     
+    Ok(0)
+}
+
+// ============================================================================
+// SEC-004: Restrict signal handling (allow only TERM, INT)
+// ============================================================================
+// LSM hook for task_kill - filters which signals can be sent to curl/wget
+#[lsm(hook = "task_kill")]
+pub fn task_kill(ctx: LsmContext) -> i32 {
+    match try_task_kill(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_task_kill(ctx: &LsmContext) -> Result<i32, i32> {
+    // task_kill LSM hook signature:
+    // int security_task_kill(struct task_struct *p, struct kernel_siginfo *info,
+    //                        int sig, const struct cred *cred);
+    //
+    // ctx.arg(0) = target task_struct pointer
+    // ctx.arg(1) = siginfo pointer
+    // ctx.arg(2) = signal number
+    // ctx.arg(3) = cred pointer
+    
+    // Check if target process is curl or wget
+    let comm = bpf_get_current_comm().map_err(|_| 0)?;
+    
+    if &comm[..4] != CURL_COMM && &comm[..4] != WGET_COMM {
+        return Ok(0); // Not our target process
+    }
+    
+    let sig = unsafe { ctx.arg::<i32>(2) };
+    
+    // SIGTERM = 15, SIGINT = 2
+    const SIGTERM: i32 = 15;
+    const SIGINT: i32 = 2;
+    
+    match sig {
+        SIGTERM | SIGINT => {
+            info!(ctx, "SEC-004: ✅ ALLOWED signal {} to curl/wget", sig);
+            Ok(0)
+        }
+        _ => {
+            warn!(ctx, "SEC-004: 🚫 BLOCKED signal {} to curl/wget (only TERM/INT allowed)", sig);
+            Err(-1) // -EPERM
+        }
+    }
+}
+
+// ============================================================================
+// SEC-003: Prevent network interface configuration changes
+// ============================================================================
+// LSM hook for capable - blocks CAP_NET_ADMIN for curl/wget
+#[lsm(hook = "capable")]
+pub fn capable(ctx: LsmContext) -> i32 {
+    match try_capable(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_capable(ctx: &LsmContext) -> Result<i32, i32> {
+    // Check if this is curl or wget
+    let comm = bpf_get_current_comm().map_err(|_| 0)?;
+    
+    if &comm[..4] != CURL_COMM && &comm[..4] != WGET_COMM {
+        return Ok(0); // Not our target process
+    }
+    
+    // SEC-001: Block curl/wget if running as root (UID=0) or privileged user
+    let uid_gid = aya_ebpf::helpers::bpf_get_current_uid_gid();
+    let uid = (uid_gid & 0xFFFFFFFF) as u32;
+    
+    const UID_NOBODY: u32 = 65534;
+    const UID_MIN_UNPRIVILEGED: u32 = 1000;
+    
+    if uid == 0 {
+        warn!(ctx, "SEC-001: 🚫 BLOCKED curl/wget capability check - running as root (UID=0)");
+        return Err(-1); // -EPERM
+    }
+    
+    if uid < UID_MIN_UNPRIVILEGED && uid != UID_NOBODY {
+        warn!(ctx, "SEC-001: 🚫 BLOCKED curl/wget capability check - privileged user (UID={})", uid);
+        return Err(-1); // -EPERM
+    }
+    
+    // capable LSM hook signature:
+    // int security_capable(const struct cred *cred, struct user_namespace *ns,
+    //                      int cap, unsigned int opts);
+    //
+    // ctx.arg(0) = cred pointer
+    // ctx.arg(1) = user_namespace pointer
+    // ctx.arg(2) = capability being checked
+    // ctx.arg(3) = options
+    
+    let cap = unsafe { ctx.arg::<i32>(2) };
+    
+    // CAP_NET_ADMIN = 12 (network administration capability)
+    const CAP_NET_ADMIN: i32 = 12;
+    const CAP_SYS_ADMIN: i32 = 21;
+    const CAP_SYS_MODULE: i32 = 16;
+    
+    match cap {
+        CAP_NET_ADMIN => {
+            warn!(ctx, "SEC-003: 🚫 BLOCKED CAP_NET_ADMIN for curl/wget");
+            Err(-1) // -EPERM
+        }
+        CAP_SYS_ADMIN => {
+            warn!(ctx, "SEC-005: 🚫 BLOCKED CAP_SYS_ADMIN for curl/wget");
+            Err(-1) // -EPERM
+        }
+        CAP_SYS_MODULE => {
+            warn!(ctx, "SEC-005: 🚫 BLOCKED CAP_SYS_MODULE for curl/wget (kernel module access)");
+            Err(-1) // -EPERM
+        }
+        _ => Ok(0) // Allow other capabilities
+    }
+}
+
+// ============================================================================
+// SEC-005: Block access to kernel memory and modules
+// ============================================================================
+// LSM hook for kernel_read_file - blocks reading kernel memory/modules
+#[lsm(hook = "kernel_read_file")]
+pub fn kernel_read_file(ctx: LsmContext) -> i32 {
+    match try_kernel_read_file(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_kernel_read_file(ctx: &LsmContext) -> Result<i32, i32> {
+    // Check if this is curl or wget
+    let comm = bpf_get_current_comm().map_err(|_| 0)?;
+    
+    if &comm[..4] != CURL_COMM && &comm[..4] != WGET_COMM {
+        return Ok(0); // Not our target process
+    }
+    
+    // kernel_read_file LSM hook signature:
+    // int security_kernel_read_file(struct file *file, enum kernel_read_file_id id,
+    //                               bool contents);
+    //
+    // ctx.arg(0) = file pointer
+    // ctx.arg(1) = id (type of kernel file being read)
+    // ctx.arg(2) = contents (bool)
+    
+    // READING_MODULE = 2, READING_KEXEC_IMAGE = 3, READING_KEXEC_INITRAMFS = 4
+    // READING_FIRMWARE = 5, READING_POLICY = 7
+    let id = unsafe { ctx.arg::<i32>(1) };
+    
+    // Block all kernel file reads for curl/wget
+    warn!(ctx, "SEC-005: 🚫 BLOCKED kernel file read (id={}) for curl/wget", id);
+    Err(-1) // -EPERM
+}
+
+// ============================================================================
+// SEC-001: Prevent curl/wget from running as root/privileged user
+// ============================================================================
+// LSM hook: bprm_check_security
+// Called during execve() to validate the binary being executed
+// This enforces that curl/wget must NOT run with UID 0 (root)
+#[lsm(hook = "bprm_check_security")]
+pub fn bprm_check_security(ctx: LsmContext) -> i32 {
+    match try_bprm_check_security(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_bprm_check_security(ctx: &LsmContext) -> Result<i32, i32> {
+    // Get the filename being executed
+    // bprm_check_security signature: int security_bprm_check(struct linux_binprm *bprm)
+    // struct linux_binprm contains:
+    //   - filename: path to the binary
+    //   - file: file pointer
+    //   - cred: credentials for the process
+    
+    let bprm_ptr = unsafe { ctx.arg::<*const c_void>(0) };
+    
+    // Read the filename from linux_binprm struct
+    // Read filename pointer from bprm (typically at offset 0)
+    let filename_ptr: *const u8 = unsafe {
+        bpf_probe_read_kernel(&*(bprm_ptr as *const *const u8)).map_err(|_| 0)?
+    };
+    
+    // Read the filename string
+    let mut filename_buf = [0u8; 256];
+    let filename_len = unsafe {
+        bpf_probe_read_user_str_bytes(filename_ptr, &mut filename_buf).map_err(|_| 0)?
+    };
+    
+    // Check if filename contains "curl" or "wget"
+    let mut is_curl_or_wget = false;
+    let search_len = if filename_len.len() > 200 { 200 } else { filename_len.len() };
+    
+    for i in 0..search_len {
+        if i + 4 <= search_len {
+            if &filename_buf[i..i+4] == b"curl" || &filename_buf[i..i+4] == b"wget" {
+                is_curl_or_wget = true;
+                break;
+            }
+        }
+    }
+    
+    if !is_curl_or_wget {
+        return Ok(0); // Not curl/wget, allow
+    }
+    
+    // Get current UID - use bpf helper to get current UID
+    // This gets the UID of the process attempting to exec curl/wget
+    let uid = (aya_ebpf::helpers::bpf_get_current_uid_gid() & 0xFFFFFFFF) as u32;
+    
+    // SEC-001: Block if trying to run curl/wget as root (UID 0) or other privileged user (UID < 1000)
+    // Exception: Allow 'nobody' user (UID 65534)
+    const UID_NOBODY: u32 = 65534;
+    const UID_MIN_UNPRIVILEGED: u32 = 1000;
+    
+    if uid == 0 {
+        warn!(ctx, "SEC-001: 🚫 BLOCKED curl/wget execution as root (UID=0)");
+        return Err(-1); // -EPERM
+    }
+    
+    if uid < UID_MIN_UNPRIVILEGED && uid != UID_NOBODY {
+        warn!(ctx, "SEC-001: 🚫 BLOCKED curl/wget execution as privileged user (UID={})", uid);
+        return Err(-1); // -EPERM
+    }
+    
+    // Allow execution for non-privileged users
+    info!(ctx, "SEC-001: ✅ Allowing curl/wget execution (UID={})", uid);
     Ok(0)
 }
 

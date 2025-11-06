@@ -1,5 +1,4 @@
 use aya::{Btf, programs::{Lsm, TracePoint}, maps::Array};
-use aya::util::online_cpus;
 use cmd_sandbox_common::policy_shared::NetworkPolicy;
 #[rustfmt::skip]
 use log::{debug, info, warn};
@@ -75,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let program: &mut Lsm = ebpf.program_mut("socket_connect").unwrap().try_into()?;
     program.load("socket_connect", &btf)?;
     program.attach()?;
+    println!("✓ socket_connect LSM attached (Network policy enforcement + SEC-001)");
     
     // Attach file_mmap LSM hook for MEM-005 (block executable mmap)
     // Note: This may not be available on all kernels
@@ -95,6 +95,78 @@ async fn main() -> anyhow::Result<()> {
         println!("⚠ file_mmap LSM not found (MEM-005 not enforced)");
     }
     
+    // Attach task_kill LSM hook for SEC-004 (restrict signals)
+    if let Some(program) = ebpf.program_mut("task_kill") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("task_kill", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ task_kill LSM attached (SEC-004: restrict signals to TERM/INT)");
+                }
+                Err(e) => {
+                    println!("⚠ task_kill LSM not available on this kernel (SEC-004 not enforced): {}", e);
+                }
+            }
+        }
+    } else {
+        println!("⚠ task_kill LSM not found (SEC-004 not enforced)");
+    }
+    
+    // Attach capable LSM hook for SEC-003 and SEC-005 (block capabilities)
+    if let Some(program) = ebpf.program_mut("capable") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("capable", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ capable LSM attached (SEC-003: block net config, SEC-005: block kernel access)");
+                }
+                Err(e) => {
+                    println!("⚠ capable LSM not available on this kernel (SEC-003/SEC-005 not enforced): {}", e);
+                }
+            }
+        }
+    } else {
+        println!("⚠ capable LSM not found (SEC-003/SEC-005 not enforced)");
+    }
+    
+    // Attach kernel_read_file LSM hook for SEC-005 (block kernel memory/modules)
+    if let Some(program) = ebpf.program_mut("kernel_read_file") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("kernel_read_file", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ kernel_read_file LSM attached (SEC-005: block kernel file reads)");
+                }
+                Err(e) => {
+                    println!("⚠ kernel_read_file LSM not available on this kernel (SEC-005 not fully enforced): {}", e);
+                }
+            }
+        }
+    } else {
+        println!("⚠ kernel_read_file LSM not found (SEC-005 not fully enforced)");
+    }
+    
+    // Attach bprm_check_security LSM hook for SEC-001 (prevent running as root)
+    if let Some(program) = ebpf.program_mut("bprm_check_security") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("bprm_check_security", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ bprm_check_security LSM attached (SEC-001: enforce non-privileged execution)");
+                }
+                Err(e) => {
+                    println!("⚠ bprm_check_security LSM not available on this kernel (SEC-001 not enforced): {}", e);
+                }
+            }
+        }
+    } else {
+        println!("⚠ bprm_check_security LSM not found (SEC-001 not enforced)");
+    }
+    
     // Attach tracepoint for openat syscall to restrict file writes
     let program: &mut TracePoint = ebpf.program_mut("sys_enter_openat").unwrap().try_into()?;
     program.load()?;
@@ -106,7 +178,8 @@ async fn main() -> anyhow::Result<()> {
     // Populate filesystem policy map from configuration
     populate_filesystem_policy(&mut ebpf, &config)?;
     
-    println!("✓ socket_connect LSM and openat tracepoint attached with policy from config");
+    println!("✓ All LSM hooks and tracepoints attached with policy from config");
+
 
     // Setup cgroup for resource limits
     setup_cgroup(&config)?;
@@ -401,6 +474,10 @@ fn check_sensitive_environment(pid: &str) {
     }
 }
 
+// Note: This function is kept for documentation purposes
+// It shows the original design where we tried to block env vars
+// Now we use check_sensitive_environment() instead
+#[allow(dead_code)]
 fn clean_process_environment(pid: &str, blocked_vars: &[&str]) {
     // Note: We cannot directly modify another process's environment variables from userspace
     // This function serves as documentation of the policy
