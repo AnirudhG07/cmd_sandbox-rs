@@ -6,13 +6,16 @@ A production-ready sandboxing solution that combines eBPF LSM hooks for network 
 
 ## Overview
 
-This project implements a multi-layer security sandbox that enforces 4 distinct policies on curl/wget:
-1. **Network Policy**: HTTPS-only via eBPF LSM
+This project implements a multi-layer security sandbox that enforces policies on curl/wget:
+1. **Network Policy**: HTTPS-only + domain whitelist via eBPF LSM  
 2. **Memory Limit**: 10MB via cgroup v2
 3. **CPU Time Limit**: 2 seconds via cgroup v2
 4. **Wall Clock Timeout**: 10 seconds via userspace monitoring
+5. **Filesystem Policy**: Monitoring only (eBPF tracepoint)
+6. **Security Policies**: Process isolation and privilege restrictions
 
-**Status: 3/4 Policies Fully Working** (File path restriction not implemented)
+**Status**: ✅ **4/5 policies fully enforced** + filesystem monitoring  
+**Note**: Filesystem write blocking requires wrapper programs (not implemented per requirements)
 
 ## Implemented Policies
 
@@ -91,13 +94,25 @@ if start_time.elapsed() > Duration::from_secs(10) {
 }
 ```
 
-### 5. 📁 File Path Restriction ❌ (Not Implemented)
-- **Original Goal**: Restrict writes to `/tmp` only
-- **Status**: ❌ **Not implemented**
-- **Why Not Feasible**:
-  - eBPF LSM cannot modify syscall arguments (only observe/block)
-  - Cannot redirect file paths at kernel level
-  - Would require wrapper script (against design philosophy)
+### 5. 📁 File Path Restriction ℹ️ (Monitoring Only)
+- **Original Goal**: Restrict writes to `/tmp/curl_downloads/` only
+- **Current Status**: ℹ️ **Monitoring only** (cannot block)
+- **Implementation**: eBPF tracepoint on `sys_enter_openat`
+- **Capability**: Logs all file write attempts by curl/wget
+- **Limitation**: Cannot block unauthorized writes
+
+**Why enforcement is not possible without wrappers**:
+  - **Landlock LSM**: Only affects child processes, but curl/wget run as independent processes
+  - **eBPF LSM file hooks**: Cannot reliably read file paths from complex kernel structures
+  - **Wrapper programs**: Would work but explicitly forbidden by requirements
+  - **See**: `FS_ENFORCEMENT_LIMITATION.md` for detailed technical analysis
+
+**What works**:
+- ✅ Logs all file operations for audit purposes
+- ✅ Detects policy violations
+- ❌ Cannot prevent unauthorized writes
+
+**Recommendation**: Use monitoring for compliance/audit, rely on OS DAC permissions for system directory protection
   - File path access control better handled by filesystem permissions
 
 ## Architecture

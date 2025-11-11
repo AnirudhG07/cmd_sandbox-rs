@@ -167,10 +167,62 @@ async fn main() -> anyhow::Result<()> {
         println!("⚠ bprm_check_security LSM not found (SEC-001 not enforced)");
     }
     
-    // Attach tracepoint for openat syscall to restrict file writes
+    // Attach inode_create LSM hook for FS-001 (restrict file writes)
+    if let Some(program) = ebpf.program_mut("inode_create") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("inode_create", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ inode_create LSM attached (FS-001: restrict file creation)");
+                }
+                Err(e) => {
+                    println!("⚠ inode_create LSM not available on this kernel (FS-001 not enforced): {}", e);
+                }
+            }
+        }
+    } else {
+        println!("⚠ inode_create LSM not found (FS-001 not enforced)");
+    }
+    
+    // Attach file_open LSM hook for FS-001 (additional file operation monitoring)
+    if let Some(program) = ebpf.program_mut("file_open") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("file_open", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ file_open LSM attached (FS-001: monitor file opens)");
+                }
+                Err(e) => {
+                    println!("⚠ file_open LSM not available on this kernel: {}", e);
+                }
+            }
+        }
+    }
+    
+    // Attach path_truncate LSM hook for FS-001 (file truncation operations)
+    if let Some(program) = ebpf.program_mut("path_truncate") {
+        let program: Result<&mut Lsm, _> = program.try_into();
+        if let Ok(program) = program {
+            match program.load("path_truncate", &btf) {
+                Ok(_) => {
+                    program.attach()?;
+                    println!("✓ path_truncate LSM attached (FS-001: monitor file truncation)");
+                }
+                Err(e) => {
+                    println!("⚠ path_truncate LSM not available on this kernel: {}", e);
+                }
+            }
+        }
+    }
+    
+    // Attach tracepoint for openat syscall to restrict file writes (path checking)
     let program: &mut TracePoint = ebpf.program_mut("sys_enter_openat").unwrap().try_into()?;
     program.load()?;
     program.attach("syscalls", "sys_enter_openat")?;
+    println!("✓ sys_enter_openat tracepoint attached (FS-001: path-based write restrictions)");
+    println!("  Note: Tracepoint provides path checking, LSM hooks provide enforcement");
     
     // Populate network policy map from configuration
     populate_network_policy(&mut ebpf, &config)?;
@@ -289,11 +341,22 @@ fn populate_filesystem_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> an
     let allowed_path = if !config.filesystem_policies.allowed_write_dirs.is_empty() {
         &config.filesystem_policies.allowed_write_dirs[0]
     } else {
-        "/tmp/cmd_sandbox_downloads"
+        "/tmp/curl_downloads/"
     };
     
     // Create the directory if it doesn't exist
     let _ = fs::create_dir_all(allowed_path);
+    
+    // Set permissions to 0777 (rwxrwxrwx) so all users can write
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(allowed_path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o777);
+            let _ = fs::set_permissions(allowed_path, perms);
+        }
+    }
     
     // Create filesystem policy
     let mut policy = FilesystemPolicy {

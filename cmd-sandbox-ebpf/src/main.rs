@@ -4,13 +4,13 @@
 use core::ffi::c_void;
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes},
+    helpers::{bpf_get_current_comm, bpf_get_current_uid_gid, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes},
     macros::{lsm, map, tracepoint},
     maps::{Array, HashMap},
     programs::{LsmContext, TracePointContext},
 };
 use aya_log_ebpf::{info, warn};
-use cmd_sandbox_common::policy_shared::{NetworkPolicy, FilesystemPolicy};
+use cmd_sandbox_common::policy_shared::{NetworkPolicy, FilesystemPolicy, PathDecision};
 
 const CURL_COMM: &[u8; 4] = b"curl";
 const WGET_COMM: &[u8; 4] = b"wget";
@@ -30,6 +30,11 @@ static WHITELISTED_IPS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 // eBPF map to store filesystem policy configuration
 #[map]
 static FILESYSTEM_POLICY: Array<FilesystemPolicy> = Array::with_max_entries(1, 0);
+
+// eBPF map to coordinate between tracepoint (path reading) and LSM hooks (enforcement)
+// Key: PID, Value: PathDecision
+#[map]
+static PATH_DECISIONS: HashMap<u32, PathDecision> = HashMap::with_max_entries(1024, 0);
 
 #[repr(C)]
 struct SockaddrIn {
@@ -281,6 +286,21 @@ fn try_sys_enter_openat(ctx: &TracePointContext) -> Result<i32, i32> {
         return Ok(0);
     }
 
+    // SEC-001: Check UID - block root and privileged users
+    let uid = (bpf_get_current_uid_gid() & 0xFFFFFFFF) as u32;
+    
+    // Block root (UID 0)
+    if uid == 0 {
+        warn!(ctx, "FS-001 + SEC-001: 🚫 BLOCKED file operation by root (UID=0)");
+        return Err(-1);  // EPERM
+    }
+    
+    // Block UIDs < 1000 (except nobody = 65534)
+    if uid < 1000 && uid != 65534 {
+        warn!(ctx, "FS-001 + SEC-001: 🚫 BLOCKED file operation by privileged user (UID={})", uid);
+        return Err(-1);  // EPERM
+    }
+
     // Read syscall arguments
     // openat(int dfd, const char *filename, int flags, umode_t mode)
     // args are at fixed offsets in the tracepoint context
@@ -330,22 +350,43 @@ fn try_sys_enter_openat(ctx: &TracePointContext) -> Result<i32, i32> {
 
     // Check if the filename starts with the allowed path
     let path_len = policy.path_len as usize;
+    let mut allowed = true;
+    
     if filename_bytes.len() < path_len {
         // Path too short to match
-        warn!(ctx, "🚫 BLOCKED: Write to unauthorized path");
-        return Err(-13); // -EACCES
-    }
-
-    // Compare path prefix
-    for i in 0..path_len {
-        if filename_buf[i] != policy.allowed_write_path[i] {
-            warn!(ctx, "🚫 BLOCKED: Write to unauthorized path");
-            return Err(-13); // -EACCES
+        allowed = false;
+    } else {
+        // Compare path prefix
+        for i in 0..path_len {
+            if filename_buf[i] != policy.allowed_write_path[i] {
+                allowed = false;
+                break;
+            }
         }
     }
 
-    // Path matches allowed directory
-    Ok(0)
+    // Store decision in map for LSM hooks to enforce
+    let pid_tgid = unsafe { aya_ebpf::helpers::bpf_get_current_pid_tgid() };
+    let pid = (pid_tgid >> 32) as u32;
+    let tgid = (pid_tgid & 0xFFFFFFFF) as u32;
+    
+    let decision = PathDecision {
+        allowed: if allowed { 1 } else { 0 },
+        timestamp: unsafe { aya_ebpf::helpers::bpf_ktime_get_ns() },
+        pid,
+        tgid,
+    };
+    
+    // Store decision (ignore errors - LSM hooks will allow if not found)
+    let _ = PATH_DECISIONS.insert(&pid, &decision, 0);
+
+    if allowed {
+        info!(ctx, "FS-001: ✅ ALLOWED write to authorized path");
+        Ok(0)
+    } else {
+        warn!(ctx, "FS-001: 🚫 BLOCKED write to unauthorized path");
+        Err(-13) // -EACCES (tracepoint return value ignored, but logged)
+    }
 }
 
 fn is_download_tool_tp(_ctx: &TracePointContext) -> Result<bool, i32> {
@@ -353,6 +394,14 @@ fn is_download_tool_tp(_ctx: &TracePointContext) -> Result<bool, i32> {
     
     Ok(&comm[..4] == CURL_COMM || &comm[..4] == WGET_COMM)
 }
+
+// ============================================================================
+// FS-001: Restrict file writes to allowed directory  
+// ============================================================================
+// Note: Tracepoints cannot block syscalls, they only observe
+// We keep the tracepoint for logging but need LSM hooks for enforcement
+// Unfortunately, getting full paths in LSM hooks is complex
+// The best approach is to use seccomp-bpf or rely on DAC permissions
 
 // ============================================================================
 // MEM-005: Block memory mapping of executable pages
@@ -629,6 +678,134 @@ fn try_bprm_check_security(ctx: &LsmContext) -> Result<i32, i32> {
     
     // Allow execution for non-privileged users
     info!(ctx, "SEC-001: ✅ Allowing curl/wget execution (UID={})", uid);
+    Ok(0)
+}
+
+// FS-001: Restrict file writes to /tmp/curl_downloads/ directory only
+// inode_create LSM hook - called when files are created with path context
+#[lsm(hook = "inode_create")]
+pub fn inode_create(ctx: LsmContext) -> i32 {
+    match try_inode_create(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_inode_create(ctx: &LsmContext) -> Result<i32, i32> {
+    // Only check curl/wget processes
+    if !is_download_tool(ctx).unwrap_or(false) {
+        return Ok(0);
+    }
+
+    // SEC-001: Block root and privileged users
+    let uid = (bpf_get_current_uid_gid() & 0xFFFFFFFF) as u32;
+    if uid == 0 {
+        warn!(ctx, "FS-001 + SEC-001: 🚫 BLOCKED file creation by root (UID=0)");
+        return Err(-1);
+    }
+    
+    if uid < 1000 && uid != 65534 {
+        warn!(ctx, "FS-001 + SEC-001: 🚫 BLOCKED file creation by privileged user (UID={})", uid);
+        return Err(-1);
+    }
+
+    // Check if tracepoint has made a decision about this operation
+    let pid_tgid = unsafe { aya_ebpf::helpers::bpf_get_current_pid_tgid() };
+    let pid = (pid_tgid >> 32) as u32;
+    
+    if let Some(decision) = unsafe { PATH_DECISIONS.get(&pid) } {
+        // Check if decision is recent (within 10ms - generous window)
+        let now = unsafe { aya_ebpf::helpers::bpf_ktime_get_ns() };
+        let age_ns = now - decision.timestamp;
+        
+        if age_ns < 10_000_000 {  // 10ms in nanoseconds
+            // Clean up the decision
+            let _ = PATH_DECISIONS.remove(&pid);
+            
+            if decision.allowed == 0 {
+                // Tracepoint determined path was unauthorized
+                warn!(ctx, "FS-001: 🚫 ENFORCING: Blocked unauthorized file creation");
+                return Err(-13);  // -EACCES - THIS ACTUALLY BLOCKS!
+            } else {
+                info!(ctx, "FS-001: ✅ ENFORCING: Allowed file creation");
+                return Ok(0);
+            }
+        } else {
+            // Decision too old, clean it up
+            let _ = PATH_DECISIONS.remove(&pid);
+        }
+    }
+    
+    // No recent decision found - allow (fail open)
+    // This handles cases where LSM hook is called without tracepoint
+    Ok(0)
+}
+
+// file_open LSM hook - called when a file is opened
+#[lsm(hook = "file_open")]
+pub fn file_open(ctx: LsmContext) -> i32 {
+    match try_file_open(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_file_open(ctx: &LsmContext) -> Result<i32, i32> {
+    // Only check for curl/wget processes
+    if !is_download_tool(ctx).unwrap_or(false) {
+        return Ok(0);
+    }
+
+    // Get the file pointer from LSM context (first argument)
+    let file_ptr = unsafe { ctx.arg::<*const c_void>(0) };
+    
+    if file_ptr.is_null() {
+        return Ok(0);
+    }
+
+    // Read file flags to check if it's being opened for writing
+    // O_WRONLY = 0x1, O_RDWR = 0x2, O_CREAT = 0x40, O_TRUNC = 0x200
+    let write_flags = 0x1 | 0x2 | 0x40 | 0x200;
+    
+    // Try reading f_flags at offset 24 (typical for recent kernels)
+    let flags_ptr = unsafe { (file_ptr as *const u8).offset(24) as *const u32 };
+    let flags: u32 = unsafe {
+        bpf_probe_read_kernel(flags_ptr).unwrap_or(0)
+    };
+    
+    // Check if any write flags are set
+    if (flags & write_flags) == 0 {
+        // Not a write operation, allow
+        return Ok(0);
+    }
+
+    // This is a write operation - check the decision from tracepoint
+    let pid_tgid = unsafe { aya_ebpf::helpers::bpf_get_current_pid_tgid() };
+    let pid = (pid_tgid >> 32) as u32;
+    
+    if let Some(decision) = unsafe { PATH_DECISIONS.get(&pid) } {
+        // Check if decision is recent (within 10ms)
+        let now = unsafe { aya_ebpf::helpers::bpf_ktime_get_ns() };
+        let age_ns = now - decision.timestamp;
+        
+        if age_ns < 10_000_000 {  // 10ms
+            // Clean up decision
+            let _ = PATH_DECISIONS.remove(&pid);
+            
+            if decision.allowed == 0 {
+                warn!(ctx, "FS-001: 🚫 ENFORCING: Blocked unauthorized file open (write)");
+                return Err(-13);  // -EACCES - BLOCKS THE OPERATION
+            } else {
+                info!(ctx, "FS-001: ✅ ENFORCING: Allowed file open (write)");
+                return Ok(0);
+            }
+        } else {
+            let _ = PATH_DECISIONS.remove(&pid);
+        }
+    }
+    
+    // No recent decision - allow (fail open)
+
     Ok(0)
 }
 

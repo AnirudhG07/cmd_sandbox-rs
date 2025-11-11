@@ -33,3 +33,17 @@ pub struct FilesystemPolicy {
 
 #[cfg(feature = "user")]
 unsafe impl Pod for FilesystemPolicy {}
+
+// Structure to track path validation decisions
+// Used to pass decisions from tracepoint to LSM hooks
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PathDecision {
+    pub allowed: u32,           // 0 = blocked, 1 = allowed
+    pub timestamp: u64,         // ktime_get_ns() when decision was made
+    pub pid: u32,               // Process ID
+    pub tgid: u32,              // Thread group ID
+}
+
+#[cfg(feature = "user")]
+unsafe impl Pod for PathDecision {}
