@@ -47,3 +47,17 @@ pub struct PathDecision {
 
 #[cfg(feature = "user")]
 unsafe impl Pod for PathDecision {}
+
+// Structure to track file write sizes (FS-003: Max file size 10MB)
+// Used to enforce maximum download size by tracking cumulative writes
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileSizeTracker {
+    pub total_bytes: u64,       // Total bytes written by this process
+    pub max_bytes: u64,         // Maximum allowed bytes (10MB = 10485760)
+    pub fd: i32,                // File descriptor being tracked
+    pub pid: u32,               // Process ID
+}
+
+#[cfg(feature = "user")]
+unsafe impl Pod for FileSizeTracker {}

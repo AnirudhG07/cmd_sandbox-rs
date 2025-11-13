@@ -211,7 +211,7 @@ pub fn test_fs004_prevent_execution(suite: &mut TestSuite) {
     
     let start = Instant::now();
     let script_file = "/tmp/curl_downloads/test_script.sh";
-    
+
     // Create a simple test script
     let script_content = "#!/bin/bash\necho 'This should not execute'\n";
     let (passed, message) = if fs::write(script_file, script_content).is_ok() {

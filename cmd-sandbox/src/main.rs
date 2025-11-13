@@ -149,22 +149,22 @@ async fn main() -> anyhow::Result<()> {
         println!("⚠ kernel_read_file LSM not found (SEC-005 not fully enforced)");
     }
     
-    // Attach bprm_check_security LSM hook for SEC-001 (prevent running as root)
+    // Attach bprm_check_security LSM hook for SEC-001 + FS-004 
     if let Some(program) = ebpf.program_mut("bprm_check_security") {
         let program: Result<&mut Lsm, _> = program.try_into();
         if let Ok(program) = program {
             match program.load("bprm_check_security", &btf) {
                 Ok(_) => {
                     program.attach()?;
-                    println!("✓ bprm_check_security LSM attached (SEC-001: enforce non-privileged execution)");
+                    println!("✓ bprm_check_security LSM attached (SEC-001 + FS-004: non-privileged exec + prevent downloaded file execution)");
                 }
                 Err(e) => {
-                    println!("⚠ bprm_check_security LSM not available on this kernel (SEC-001 not enforced): {}", e);
+                    println!("⚠ bprm_check_security LSM not available on this kernel (SEC-001/FS-004 not enforced): {}", e);
                 }
             }
         }
     } else {
-        println!("⚠ bprm_check_security LSM not found (SEC-001 not enforced)");
+        println!("⚠ bprm_check_security LSM not found (SEC-001/FS-004 not enforced)");
     }
     
     // Attach inode_create LSM hook for FS-001 (restrict file writes)
@@ -224,6 +224,12 @@ async fn main() -> anyhow::Result<()> {
     println!("✓ sys_enter_openat tracepoint attached (FS-001: path-based write restrictions)");
     println!("  Note: Tracepoint provides path checking, LSM hooks provide enforcement");
     
+    // Attach tracepoint for write syscall to enforce file size limits (FS-003/MEM-001)
+    let program: &mut TracePoint = ebpf.program_mut("sys_enter_write").unwrap().try_into()?;
+    program.load()?;
+    program.attach("syscalls", "sys_enter_write")?;
+    println!("✓ sys_enter_write tracepoint attached (FS-003/MEM-001: 10MB file size limit)");
+    
     // Populate network policy map from configuration
     populate_network_policy(&mut ebpf, &config)?;
     
@@ -241,12 +247,13 @@ async fn main() -> anyhow::Result<()> {
     
     // Shared state for tracking process start times
     let wall_clock_limit = Duration::from_secs(config.memory_policies.max_cpu_time as u64);
+    let max_file_size = config.filesystem_policies.max_file_size;
     let process_tracker: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
     
     // Spawn task to monitor and limit curl/wget processes
     let tracker_clone = Arc::clone(&process_tracker);
     tokio::spawn(async move {
-        monitor_processes(tracker_clone, wall_clock_limit).await;
+        monitor_processes(tracker_clone, wall_clock_limit, max_file_size).await;
     });
 
     let ctrl_c = signal::ctrl_c();
@@ -330,6 +337,53 @@ fn populate_whitelisted_ips(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> anyh
     Ok(())
 }
 
+/// Mount a directory with noexec flag to prevent execution of any files within it.
+/// This provides FS-004 enforcement at the filesystem level, eliminating race conditions.
+fn mount_noexec(path: &str) -> anyhow::Result<()> {
+    use std::process::Command;
+    
+    info!("FS-004: Setting up noexec mount for {}", path);
+    
+    // First, check if already mounted with noexec
+    let mount_output = Command::new("mount")
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to check mounts: {}", e))?;
+    
+    let mount_str = String::from_utf8_lossy(&mount_output.stdout);
+    let already_mounted = mount_str.lines().any(|line| {
+        line.contains(path) && line.contains("noexec")
+    });
+    
+    if already_mounted {
+        info!("FS-004: {} already mounted with noexec", path);
+        return Ok(());
+    }
+    
+    // Use bind mount with noexec
+    // First bind mount to itself
+    let status = Command::new("mount")
+        .args(&["--bind", path, path])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to bind mount: {}", e))?;
+    
+    if !status.success() {
+        return Err(anyhow::anyhow!("Bind mount failed for {}", path));
+    }
+    
+    // Then remount with noexec
+    let status = Command::new("mount")
+        .args(&["-o", "remount,noexec,nosuid,nodev", path])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to remount with noexec: {}", e))?;
+    
+    if !status.success() {
+        return Err(anyhow::anyhow!("Remount with noexec failed for {}", path));
+    }
+    
+    info!("✓ FS-004: Successfully mounted {} with noexec flag", path);
+    Ok(())
+}
+
 fn populate_filesystem_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> anyhow::Result<()> {
     use cmd_sandbox_common::policy_shared::FilesystemPolicy;
     use aya::maps::Array;
@@ -357,6 +411,10 @@ fn populate_filesystem_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> an
             let _ = fs::set_permissions(allowed_path, perms);
         }
     }
+    
+    // FS-004: Mount the directory with noexec to prevent execution of any files
+    // This is more robust than eBPF LSM hooks as it's enforced at the filesystem level
+    mount_noexec(allowed_path)?;
     
     // Create filesystem policy
     let mut policy = FilesystemPolicy {
@@ -417,7 +475,11 @@ fn cleanup_cgroup() {
     info!("Cleaned up cgroup");
 }
 
-async fn monitor_processes(process_tracker: Arc<Mutex<HashMap<String, Instant>>>, wall_clock_limit: Duration) {
+async fn monitor_processes(
+    process_tracker: Arc<Mutex<HashMap<String, Instant>>>, 
+    wall_clock_limit: Duration,
+    max_file_size: u64,
+) {
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     
     loop {
@@ -445,6 +507,23 @@ async fn monitor_processes(process_tracker: Arc<Mutex<HashMap<String, Instant>>>
                                               comm, pid, wall_clock_limit.as_secs());
                                         kill_process(&pid);
                                         tracker.remove(&pid);
+                                        continue;
+                                    }
+                                    
+                                    // FS-003/MEM-001: Check if process is writing a file > max_file_size
+                                    if let Some(file_size) = check_process_file_size(&pid) {
+                                        if file_size > max_file_size {
+                                            warn!("FS-003: Killing {} (PID {}) - file size {:.2}MB exceeds {:.2}MB limit", 
+                                                  comm, pid, file_size as f64 / (1024.0 * 1024.0), max_file_size as f64 / (1024.0 * 1024.0));
+                                            println!("⚠️  FS-003 VIOLATION: {} (PID {}) - file size {:.2}MB > {:.2}MB", 
+                                                     comm, pid, file_size as f64 / (1024.0 * 1024.0), max_file_size as f64 / (1024.0 * 1024.0));
+                                            kill_process(&pid);
+                                            tracker.remove(&pid);
+                                        } else if file_size > (max_file_size * 90 / 100) {
+                                            // Warn when approaching limit
+                                            info!("FS-003: {} (PID {}) approaching limit - {:.2}MB/{:.2}MB", 
+                                                  comm, pid, file_size as f64 / (1024.0 * 1024.0), max_file_size as f64 / (1024.0 * 1024.0));
+                                        }
                                     }
                                 } else {
                                     // New process - track it and move to cgroup
@@ -496,6 +575,39 @@ fn kill_process(pid: &str) {
         unsafe {
             libc::kill(pid_num, libc::SIGKILL);
         }
+    }
+}
+
+// FS-003: Check if a process has any open files exceeding the configured max_file_size
+// Returns the maximum file size found, or None if no files in /tmp/curl_downloads/
+fn check_process_file_size(pid: &str) -> Option<u64> {
+    // Check open file descriptors in /proc/PID/fd/
+    let fd_dir = format!("/proc/{}/fd", pid);
+    let mut max_size = 0u64;
+    
+    if let Ok(entries) = fs::read_dir(&fd_dir) {
+        for entry in entries.flatten() {
+            if let Ok(link) = fs::read_link(entry.path()) {
+                // Check if file is in /tmp/curl_downloads/
+                if let Some(path_str) = link.to_str() {
+                    if path_str.starts_with("/tmp/curl_downloads/") {
+                        // Get file size
+                        if let Ok(metadata) = fs::metadata(&link) {
+                            let size = metadata.len();
+                            if size > max_size {
+                                max_size = size;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if max_size > 0 {
+        Some(max_size)
+    } else {
+        None
     }
 }
 

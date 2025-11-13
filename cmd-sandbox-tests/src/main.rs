@@ -222,6 +222,10 @@ async fn main() -> Result<()> {
         // MEM-001: Memory Limit
         println!("{}", "▶ MEM-001: Memory Limit (10MB)".bold());
         mem_tests::test_mem001_memory_limit(&mut suite).await;
+        
+        // MEM-001 + FS-003: File Size Limit (10MB)
+        println!("{}", "▶ MEM-001/FS-003: File Size Limit (10MB download)".bold());
+        mem_tests::test_mem001_file_size_limit(&mut suite).await;
 
         // MEM-003: Wall Clock Timeout
         println!("{}", "▶ MEM-003: Wall Clock Timeout (10s)".bold());

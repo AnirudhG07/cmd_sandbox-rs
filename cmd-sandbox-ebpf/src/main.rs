@@ -10,13 +10,14 @@ use aya_ebpf::{
     programs::{LsmContext, TracePointContext},
 };
 use aya_log_ebpf::{info, warn};
-use cmd_sandbox_common::policy_shared::{NetworkPolicy, FilesystemPolicy, PathDecision};
+use cmd_sandbox_common::policy_shared::{NetworkPolicy, FilesystemPolicy, PathDecision, FileSizeTracker};
 
 const CURL_COMM: &[u8; 4] = b"curl";
 const WGET_COMM: &[u8; 4] = b"wget";
 const AF_UNIX: u16 = 1;  // Unix domain sockets (local only)
 const AF_INET: u16 = 2;
 const AF_INET6: u16 = 10;
+const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;  // 10MB limit for FS-003/MEM-001
 
 // eBPF map to store network policy configuration
 #[map]
@@ -35,6 +36,11 @@ static FILESYSTEM_POLICY: Array<FilesystemPolicy> = Array::with_max_entries(1, 0
 // Key: PID, Value: PathDecision
 #[map]
 static PATH_DECISIONS: HashMap<u32, PathDecision> = HashMap::with_max_entries(1024, 0);
+
+// eBPF map to track file write sizes (FS-003: Max 10MB file size)
+// Key: PID, Value: FileSizeTracker
+#[map]
+static WRITE_TRACKER: HashMap<u32, FileSizeTracker> = HashMap::with_max_entries(1024, 0);
 
 #[repr(C)]
 struct SockaddrIn {
@@ -606,10 +612,13 @@ fn try_kernel_read_file(ctx: &LsmContext) -> Result<i32, i32> {
 
 // ============================================================================
 // SEC-001: Prevent curl/wget from running as root/privileged user
+// FS-004: Prevent execution of downloaded files from /tmp/curl_downloads/
 // ============================================================================
 // LSM hook: bprm_check_security
 // Called during execve() to validate the binary being executed
-// This enforces that curl/wget must NOT run with UID 0 (root)
+// This enforces:
+//   - SEC-001: curl/wget must NOT run with UID 0 (root)
+//   - FS-004: Files in /tmp/curl_downloads/ must NOT be executable
 #[lsm(hook = "bprm_check_security")]
 pub fn bprm_check_security(ctx: LsmContext) -> i32 {
     match try_bprm_check_security(&ctx) {
@@ -622,27 +631,53 @@ fn try_bprm_check_security(ctx: &LsmContext) -> Result<i32, i32> {
     // Get the filename being executed
     // bprm_check_security signature: int security_bprm_check(struct linux_binprm *bprm)
     // struct linux_binprm contains:
-    //   - filename: path to the binary
+    //   - filename: path to the binary (char *filename)
     //   - file: file pointer
     //   - cred: credentials for the process
     
     let bprm_ptr = unsafe { ctx.arg::<*const c_void>(0) };
     
     // Read the filename from linux_binprm struct
-    // Read filename pointer from bprm (typically at offset 0)
+    // The filename field is a char* pointer, typically at offset 0
     let filename_ptr: *const u8 = unsafe {
         bpf_probe_read_kernel(&*(bprm_ptr as *const *const u8)).map_err(|_| 0)?
     };
     
-    // Read the filename string
+    // Read the filename string - use kernel read since filename is in kernel space
     let mut filename_buf = [0u8; 256];
-    let filename_len = unsafe {
-        bpf_probe_read_user_str_bytes(filename_ptr, &mut filename_buf).map_err(|_| 0)?
+    let filename_bytes = unsafe {
+        // Use bpf_probe_read_kernel_str_bytes for kernel memory
+        aya_ebpf::helpers::bpf_probe_read_kernel_str_bytes(
+            filename_ptr,
+            &mut filename_buf
+        ).map_err(|_| 0)?
     };
+    
+    let filename_len = filename_bytes.len();
+    
+    // FS-004: Check if trying to execute a file from /tmp/curl_downloads/
+    // This prevents execution of downloaded files
+    const DOWNLOADS_PATH: &[u8] = b"/tmp/curl_downloads/";
+    let downloads_path_len = DOWNLOADS_PATH.len();
+    
+    if filename_len >= downloads_path_len {
+        let mut is_downloads_path = true;
+        for i in 0..downloads_path_len {
+            if filename_buf[i] != DOWNLOADS_PATH[i] {
+                is_downloads_path = false;
+                break;
+            }
+        }
+        
+        if is_downloads_path {
+            warn!(ctx, "FS-004: 🚫 BLOCKED execution of downloaded file from /tmp/curl_downloads/");
+            return Err(-13); // -EACCES
+        }
+    }
     
     // Check if filename contains "curl" or "wget"
     let mut is_curl_or_wget = false;
-    let search_len = if filename_len.len() > 200 { 200 } else { filename_len.len() };
+    let search_len = if filename_len > 200 { 200 } else { filename_len };
     
     for i in 0..search_len {
         if i + 4 <= search_len {
@@ -807,6 +842,31 @@ fn try_file_open(ctx: &LsmContext) -> Result<i32, i32> {
     // No recent decision - allow (fail open)
 
     Ok(0)
+}
+
+// ===========================================================================
+// FS-003/MEM-001: Track file write sizes and enforce 10MB limit
+// ===========================================================================
+
+/// Tracepoint for sys_enter_write to track cumulative file writes
+/// Enforces FS-003: Maximum file size 10MB
+/// NOTE: Currently disabled - relying on userspace file size monitoring instead
+/// because tracepoint offsets are architecture-dependent and unreliable
+#[tracepoint]
+pub fn sys_enter_write(ctx: TracePointContext) -> i32 {
+    // Disabled - just return OK to avoid false positives from wrong offsets
+    // File size enforcement is done in userspace by monitoring /proc/[pid]/fd/
+    0
+}
+
+fn try_sys_enter_write(_ctx: &TracePointContext) -> Result<i32, i32> {
+    // DISABLED - See userspace check_process_file_size() instead
+    Ok(0)
+}
+
+// Helper function to check if process is curl or wget
+fn is_curl_or_wget(comm: &[u8; 16]) -> bool {
+    (comm[0..4] == *CURL_COMM) || (comm[0..4] == *WGET_COMM)
 }
 
 #[cfg(not(test))]

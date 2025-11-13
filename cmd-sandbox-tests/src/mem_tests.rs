@@ -25,11 +25,11 @@ async fn run_curl_command(args: &[&str], timeout_secs: u64) -> Result<(std::proc
 // ============================================================================
 pub async fn test_mem001_memory_limit(suite: &mut TestSuite) {
     println!("{}", "Test MEM-001: Small download within 10MB limit - Should SUCCEED".bold());
-    println!("Command: curl https://example.com -o /tmp/mem-test-small.html");
+    println!("Command: curl https://example.com -o /tmp/curl_downloads/mem-test-small.html");
     println!("---");
 
     let start = Instant::now();
-    let result = run_curl_command(&["https://example.com", "-o", "/tmp/mem-test-small.html"], 10).await;
+    let result = run_curl_command(&["https://example.com", "-o", "/tmp/curl_downloads/mem-test-small.html"], 10).await;
 
     match result {
         Ok((status, _)) if status.success() => {
@@ -57,7 +57,56 @@ pub async fn test_mem001_memory_limit(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/mem-test-small.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/mem-test-small.html");
+    println!();
+}
+
+// ============================================================================
+// MEM-001 + FS-003: Test 10MB file size limit enforcement
+// ============================================================================
+pub async fn test_mem001_file_size_limit(suite: &mut TestSuite) {
+    println!("{}", "Test MEM-001/FS-003: 10MB file size limit - Should BLOCK".bold());
+    println!("Command: curl https://ash-speed.hetzner.com/100MB.bin -o /tmp/curl_downloads/large.bin");
+    println!("---");
+    println!("Note: Download should be stopped when file reaches 10MB");
+
+    let start = Instant::now();
+    let output_file = "/tmp/curl_downloads/large.bin";
+    let _ = fs::remove_file(output_file);
+    
+    let result = run_curl_command(
+        &[
+            "https://ash-speed.hetzner.com/100MB.bin",
+            "-o",
+            output_file,
+        ],
+        30, // Give it time to download
+    )
+    .await;
+
+    let duration = start.elapsed();
+    
+    // Check if file exists and its size
+    let file_size = fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
+    let max_size = 10 * 1024 * 1024; // 10MB
+    
+    let passed = file_size <= max_size;
+    let message = if file_size == 0 {
+        "Download prevented/failed - no file created".to_string()
+    } else if passed {
+        format!("File size limited to {:.2}MB (within 10MB limit)", file_size as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("File size {:.2}MB exceeds 10MB limit - ENFORCEMENT FAILED", file_size as f64 / (1024.0 * 1024.0))
+    };
+    
+    suite.record(TestResult {
+        name: "MEM-001/FS-003: 10MB file size limit".to_string(),
+        passed,
+        message,
+        duration,
+    });
+    
+    let _ = fs::remove_file(output_file);
     println!();
 }
 
@@ -66,7 +115,7 @@ pub async fn test_mem001_memory_limit(suite: &mut TestSuite) {
 // ============================================================================
 pub async fn test_mem003_wall_clock_timeout(suite: &mut TestSuite) {
     println!("{}", "Test MEM-003: Wall clock timeout (10s limit) - Should TIMEOUT".bold());
-    println!("Command: curl https://ash-speed.hetzner.com/10GB.bin -o /tmp/timeout-test.bin");
+    println!("Command: curl https://ash-speed.hetzner.com/10GB.bin -o /tmp/curl_downloads/timeout-test.bin");
     println!("---");
     println!("Note: Should be killed after ~10 seconds wall clock time by sandbox");
 
@@ -75,7 +124,7 @@ pub async fn test_mem003_wall_clock_timeout(suite: &mut TestSuite) {
         &[
             "https://ash-speed.hetzner.com/10GB.bin",
             "-o",
-            "/tmp/timeout-test.bin",
+            "/tmp/curl_downloads/timeout-test.bin",
         ],
         15, // Give it 15s but sandbox should kill at 10s
     )
@@ -120,7 +169,7 @@ pub async fn test_mem003_wall_clock_timeout(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/timeout-test.bin");
+    let _ = fs::remove_file("/tmp/curl_downloads/timeout-test.bin");
     println!();
 }
 
@@ -129,11 +178,11 @@ pub async fn test_mem003_wall_clock_timeout(suite: &mut TestSuite) {
 // ============================================================================
 pub async fn test_mem003_quick_operation(suite: &mut TestSuite) {
     println!("{}", "Test MEM-003: Quick operation under 10s - Should SUCCEED".bold());
-    println!("Command: curl https://example.com -o /tmp/quick-test.html");
+    println!("Command: curl https://example.com -o /tmp/curl_downloads/quick-test.html");
     println!("---");
 
     let start = Instant::now();
-    let result = run_curl_command(&["https://example.com", "-o", "/tmp/quick-test.html"], 10).await;
+    let result = run_curl_command(&["https://example.com", "-o", "/tmp/curl_downloads/quick-test.html"], 10).await;
 
     match result {
         Ok((status, _)) if status.success() => {
@@ -161,7 +210,7 @@ pub async fn test_mem003_quick_operation(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/quick-test.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/quick-test.html");
     println!();
 }
 
@@ -333,8 +382,8 @@ int main() {
 }
 "#;
     
-    let source_path = "/tmp/stack_test.c";
-    let binary_path = "/tmp/stack_test";
+    let source_path = "/tmp/curl_downloads/stack_test.c";
+    let binary_path = "/tmp/curl_downloads/stack_test";
     
     // Write the C source
     if let Err(e) = fs::write(source_path, c_program) {

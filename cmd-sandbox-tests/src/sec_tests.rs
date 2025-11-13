@@ -115,7 +115,7 @@ pub async fn test_sec002_block_password_env(suite: &mut TestSuite) {
     
     // Try to run curl with PASSWORD in environment variable
     let mut child = match Command::new("sh")
-        .args(&["-c", "MY_PASSWORD=secret123 curl https://example.com -o /tmp/sec002-test1.html"])
+        .args(&["-c", "MY_PASSWORD=secret123 curl https://example.com -o /tmp/curl_downloads/sec002-test1.html"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -191,7 +191,7 @@ pub async fn test_sec002_block_key_env(suite: &mut TestSuite) {
     
     // Try to run curl with KEY in environment variable
     let mut child = match Command::new("sh")
-        .args(&["-c", "API_KEY=abc123 curl https://example.com -o /tmp/sec002-test2.html"])
+        .args(&["-c", "API_KEY=abc123 curl https://example.com -o /tmp/curl_downloads/sec002-test2.html"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -267,7 +267,7 @@ pub async fn test_sec002_block_secret_env(suite: &mut TestSuite) {
     
     // Try to run curl with SECRET in environment variable
     let mut child = match Command::new("sh")
-        .args(&["-c", "MY_SECRET=xyz789 curl https://example.com -o /tmp/sec002-test3.html"])
+        .args(&["-c", "MY_SECRET=xyz789 curl https://example.com -o /tmp/curl_downloads/sec002-test3.html"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -347,7 +347,7 @@ pub async fn test_sec_block_ld_preload(suite: &mut TestSuite) {
     
     // Try to run curl with LD_PRELOAD set
     let mut child = match Command::new("sh")
-        .args(&["-c", "LD_PRELOAD=/tmp/malicious.so curl https://example.com -o /tmp/sec-ld-test1.html"])
+        .args(&["-c", "LD_PRELOAD=/tmp/curl_downloads/malicious.so curl https://example.com -o /tmp/curl_downloads/sec-ld-test1.html"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -422,7 +422,7 @@ pub async fn test_sec_block_ld_library_path(suite: &mut TestSuite) {
     
     // Try to run curl with LD_LIBRARY_PATH set
     let mut child = match Command::new("sh")
-        .args(&["-c", "LD_LIBRARY_PATH=/tmp/malicious curl https://example.com -o /tmp/sec-ld-test2.html"])
+        .args(&["-c", "LD_LIBRARY_PATH=/tmp/curl_downloads/malicious curl https://example.com -o /tmp/curl_downloads/sec-ld-test2.html"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -581,7 +581,7 @@ pub async fn test_sec004_allow_sigterm(suite: &mut TestSuite) {
     
     // Start a curl process that will run for a while
     let mut child = match Command::new("curl")
-        .args(&["https://example.com", "-o", "/tmp/sec004-test1.html", "--max-time", "30"])
+        .args(&["https://example.com", "-o", "/tmp/curl_downloads/sec004-test1.html", "--max-time", "30"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -637,7 +637,7 @@ pub async fn test_sec004_allow_sigint(suite: &mut TestSuite) {
     
     // Start a curl process that will run for a while
     let mut child = match Command::new("curl")
-        .args(&["https://example.com", "-o", "/tmp/sec004-test2.html", "--max-time", "30"])
+        .args(&["https://example.com", "-o", "/tmp/curl_downloads/sec004-test2.html", "--max-time", "30"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -693,7 +693,7 @@ pub async fn test_sec004_block_other_signals(suite: &mut TestSuite) {
     
     // Start a curl process that will run for a while
     let mut child = match Command::new("curl")
-        .args(&["https://example.com", "-o", "/tmp/sec004-test3.html", "--max-time", "30"])
+        .args(&["https://example.com", "-o", "/tmp/curl_downloads/sec004-test3.html", "--max-time", "30"])
         .spawn() {
         Ok(c) => c,
         Err(e) => {

@@ -25,15 +25,15 @@ async fn run_curl_command(args: &[&str], timeout_secs: u64) -> Result<(std::proc
 // ============================================================================
 pub async fn test_net006_https_allowed(suite: &mut TestSuite) {
     println!("{}", "Test NET-006.1: HTTPS (port 443) - Should SUCCEED".bold());
-    println!("Command: curl https://example.com -o /tmp/test-https.html");
+    println!("Command: curl https://example.com -o /tmp/curl_downloads/test-https.html");
     println!("---");
 
     let start = Instant::now();
-    let result = run_curl_command(&["https://example.com", "-o", "/tmp/test-https.html"], 10).await;
+    let result = run_curl_command(&["https://example.com", "-o", "/tmp/curl_downloads/test-https.html"], 10).await;
 
     match result {
         Ok((status, _)) if status.success() => {
-            let file_size = fs::metadata("/tmp/test-https.html")
+            let file_size = fs::metadata("/tmp/curl_downloads/test-https.html")
                 .map(|m| m.len())
                 .unwrap_or(0);
             suite.record(TestResult {
@@ -60,17 +60,17 @@ pub async fn test_net006_https_allowed(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-https.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-https.html");
     println!();
 }
 
 pub async fn test_net006_http_blocked(suite: &mut TestSuite) {
     println!("{}", "Test NET-006.2: HTTP (port 80) - Should FAIL".bold());
-    println!("Command: curl http://neverssl.com -o /tmp/test-http.html");
+    println!("Command: curl http://neverssl.com -o /tmp/curl_downloads/test-http.html");
     println!("---");
 
     let start = Instant::now();
-    let result = run_curl_command(&["http://neverssl.com", "-o", "/tmp/test-http.html"], 10).await;
+    let result = run_curl_command(&["http://neverssl.com", "-o", "/tmp/curl_downloads/test-http.html"], 10).await;
 
     match result {
         Ok((status, _)) if !status.success() => {
@@ -98,7 +98,7 @@ pub async fn test_net006_http_blocked(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-http.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-http.html");
     println!();
 }
 
@@ -107,13 +107,13 @@ pub async fn test_net006_http_blocked(suite: &mut TestSuite) {
 // ============================================================================
 pub async fn test_net002_ftp_blocked(suite: &mut TestSuite) {
     println!("{}", "Test NET-002.1: FTP protocol (port 21) - Should FAIL".bold());
-    println!("Command: curl ftp://ftp.gnu.org/ -o /tmp/test-ftp.html --max-time 5");
+    println!("Command: curl ftp://ftp.gnu.org/ -o /tmp/curl_downloads/test-ftp.html --max-time 5");
     println!("---");
 
     let start = Instant::now();
     let result = run_curl_command(&[
         "ftp://ftp.gnu.org/",
-        "-o", "/tmp/test-ftp.html",
+        "-o", "/tmp/curl_downloads/test-ftp.html",
         "--max-time", "5"
     ], 10).await;
 
@@ -143,19 +143,19 @@ pub async fn test_net002_ftp_blocked(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-ftp.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-ftp.html");
     println!();
 }
 
 pub async fn test_net002_sftp_blocked(suite: &mut TestSuite) {
     println!("{}", "Test NET-002.2: SFTP/SSH protocol (port 22) - Should FAIL".bold());
-    println!("Command: curl sftp://test.rebex.net/ -o /tmp/test-sftp.html --max-time 5");
+    println!("Command: curl sftp://test.rebex.net/ -o /tmp/curl_downloads/test-sftp.html --max-time 5");
     println!("---");
 
     let start = Instant::now();
     let result = run_curl_command(&[
         "sftp://test.rebex.net/",
-        "-o", "/tmp/test-sftp.html",
+        "-o", "/tmp/curl_downloads/test-sftp.html",
         "--max-time", "5"
     ], 10).await;
 
@@ -185,7 +185,7 @@ pub async fn test_net002_sftp_blocked(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-sftp.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-sftp.html");
     println!();
 }
 
@@ -234,13 +234,13 @@ pub async fn test_net002_telnet_blocked(suite: &mut TestSuite) {
 // ============================================================================
 pub async fn test_net005_block_192_168(suite: &mut TestSuite) {
     println!("{}", "Test NET-005.1: Block 192.168.x.x (private IP) - Should FAIL".bold());
-    println!("Command: curl http://192.168.1.1 -o /tmp/test-private1.html --max-time 5");
+    println!("Command: curl http://192.168.1.1 -o /tmp/curl_downloads/test-private1.html --max-time 5");
     println!("---");
 
     let start = Instant::now();
     let result = run_curl_command(&[
         "http://192.168.1.1",
-        "-o", "/tmp/test-private1.html",
+        "-o", "/tmp/curl_downloads/test-private1.html",
         "--max-time", "5"
     ], 10).await;
 
@@ -270,19 +270,19 @@ pub async fn test_net005_block_192_168(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-private1.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-private1.html");
     println!();
 }
 
 pub async fn test_net005_block_10_0(suite: &mut TestSuite) {
     println!("{}", "Test NET-005.2: Block 10.x.x.x (private IP) - Should FAIL".bold());
-    println!("Command: curl http://10.0.0.1 -o /tmp/test-private2.html --max-time 5");
+    println!("Command: curl http://10.0.0.1 -o /tmp/curl_downloads/test-private2.html --max-time 5");
     println!("---");
 
     let start = Instant::now();
     let result = run_curl_command(&[
         "http://10.0.0.1",
-        "-o", "/tmp/test-private2.html",
+        "-o", "/tmp/curl_downloads/test-private2.html",
         "--max-time", "5"
     ], 10).await;
 
@@ -312,19 +312,19 @@ pub async fn test_net005_block_10_0(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-private2.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-private2.html");
     println!();
 }
 
 pub async fn test_net005_block_172_16(suite: &mut TestSuite) {
     println!("{}", "Test NET-005.3: Block 172.16-31.x.x (private IP) - Should FAIL".bold());
-    println!("Command: curl http://172.16.0.1 -o /tmp/test-private3.html --max-time 5");
+    println!("Command: curl http://172.16.0.1 -o /tmp/curl_downloads/test-private3.html --max-time 5");
     println!("---");
 
     let start = Instant::now();
     let result = run_curl_command(&[
         "http://172.16.0.1",
-        "-o", "/tmp/test-private3.html",
+        "-o", "/tmp/curl_downloads/test-private3.html",
         "--max-time", "5"
     ], 10).await;
 
@@ -354,19 +354,19 @@ pub async fn test_net005_block_172_16(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-private3.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-private3.html");
     println!();
 }
 
 pub async fn test_net005_block_loopback(suite: &mut TestSuite) {
     println!("{}", "Test NET-005.4: Block 127.0.0.1 (loopback) - Should FAIL".bold());
-    println!("Command: curl http://127.0.0.1:8080 -o /tmp/test-loopback.html --max-time 5");
+    println!("Command: curl http://127.0.0.1:8080 -o /tmp/curl_downloads/test-loopback.html --max-time 5");
     println!("---");
 
     let start = Instant::now();
     let result = run_curl_command(&[
         "http://127.0.0.1:8080",
-        "-o", "/tmp/test-loopback.html",
+        "-o", "/tmp/curl_downloads/test-loopback.html",
         "--max-time", "5"
     ], 10).await;
 
@@ -396,7 +396,7 @@ pub async fn test_net005_block_loopback(suite: &mut TestSuite) {
             });
         }
     }
-    let _ = fs::remove_file("/tmp/test-loopback.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-loopback.html");
     println!();
 }
 
@@ -405,15 +405,15 @@ pub async fn test_net005_block_loopback(suite: &mut TestSuite) {
 // ============================================================================
 pub async fn test_net001_whitelisted_domain(suite: &mut TestSuite) {
     println!("{}", "Test NET-001.1: Whitelisted domain (example.com) - Should SUCCEED".bold());
-    println!("Command: curl https://example.com -o /tmp/test-whitelist.html");
+    println!("Command: curl https://example.com -o /tmp/curl_downloads/test-whitelist.html");
     println!("---");
 
     let start = Instant::now();
-    let result = run_curl_command(&["https://example.com", "-o", "/tmp/test-whitelist.html"], 10).await;
+    let result = run_curl_command(&["https://example.com", "-o", "/tmp/curl_downloads/test-whitelist.html"], 10).await;
 
     match result {
         Ok((status, _)) if status.success() => {
-            let file_size = fs::metadata("/tmp/test-whitelist.html")
+            let file_size = fs::metadata("/tmp/curl_downloads/test-whitelist.html")
                 .map(|m| m.len())
                 .unwrap_or(0);
             suite.record(TestResult {
@@ -441,17 +441,17 @@ pub async fn test_net001_whitelisted_domain(suite: &mut TestSuite) {
         }
     }
     
-    let _ = fs::remove_file("/tmp/test-whitelist.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-whitelist.html");
     println!();
 }
 
 pub async fn test_net001_non_whitelisted_domain(suite: &mut TestSuite) {
     println!("{}", "Test NET-001.2: Non-whitelisted domain (google.com) - Should FAIL".bold());
-    println!("Command: curl https://google.com -o /tmp/test-non-whitelist.html");
+    println!("Command: curl https://google.com -o /tmp/curl_downloads/test-non-whitelist.html");
     println!("---");
 
     let start = Instant::now();
-    let result = run_curl_command(&["https://google.com", "-o", "/tmp/test-non-whitelist.html", "--max-time", "5"], 10).await;
+    let result = run_curl_command(&["https://google.com", "-o", "/tmp/curl_downloads/test-non-whitelist.html", "--max-time", "5"], 10).await;
 
     match result {
         Ok((status, _)) if !status.success() => {
@@ -481,6 +481,6 @@ pub async fn test_net001_non_whitelisted_domain(suite: &mut TestSuite) {
         }
     }
     
-    let _ = fs::remove_file("/tmp/test-non-whitelist.html");
+    let _ = fs::remove_file("/tmp/curl_downloads/test-non-whitelist.html");
     println!();
 }
