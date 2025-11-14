@@ -372,7 +372,7 @@ fn try_sys_enter_openat(ctx: &TracePointContext) -> Result<i32, i32> {
     }
 
     // Store decision in map for LSM hooks to enforce
-    let pid_tgid = unsafe { aya_ebpf::helpers::bpf_get_current_pid_tgid() };
+    let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
     let pid = (pid_tgid >> 32) as u32;
     let tgid = (pid_tgid & 0xFFFFFFFF) as u32;
     

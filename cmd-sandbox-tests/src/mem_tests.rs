@@ -74,7 +74,7 @@ pub async fn test_mem001_file_size_limit(suite: &mut TestSuite) {
     let output_file = "/tmp/curl_downloads/large.bin";
     let _ = fs::remove_file(output_file);
     
-    let result = run_curl_command(
+    let _result = run_curl_command(
         &[
             "https://ash-speed.hetzner.com/100MB.bin",
             "-o",

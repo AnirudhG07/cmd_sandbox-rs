@@ -2,9 +2,8 @@ use anyhow::{Context, Result};
 use colored::*;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
-use tokio::time::timeout;
+use std::process::Command;
+use std::time::Duration;
 
 // Test modules organized by policy category
 mod net_tests;
@@ -52,11 +51,6 @@ impl TestSuite {
             println!("{}", format!("Result: ❌ FAIL - {}", result.message).red());
         }
         self.results.push(result);
-    }
-
-    fn skip(&mut self, _name: &str) {
-        self.total += 1;
-        self.skipped += 1;
     }
 
     fn print_summary(&self) {

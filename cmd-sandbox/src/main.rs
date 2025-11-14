@@ -384,6 +384,57 @@ fn mount_noexec(path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// FS-004: Watch downloads directory and set specific permissions on all files
+/// This prevents execution via interpreters (e.g., bash /tmp/curl_downloads/script.sh)
+async fn strip_exec_permissions_watcher(dir_path: &str, target_permissions: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::time::{sleep, Duration};
+    
+    info!("FS-004: Starting permission watcher for {} (setting mode: {:o})", dir_path, target_permissions);
+    
+    // First, set permissions on any existing files
+    if let Ok(entries) = fs::read_dir(dir_path) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(target_permissions);
+                    if let Err(e) = fs::set_permissions(entry.path(), perms) {
+                        warn!("Failed to set permissions on {:?}: {}", entry.path(), e);
+                    } else {
+                        info!("FS-004: Set permissions {:o} on {:?}", target_permissions, entry.path());
+                    }
+                }
+            }
+        }
+    }
+    
+    // Watch for new files every 100ms
+    loop {
+        sleep(Duration::from_millis(100)).await;
+        
+        if let Ok(entries) = fs::read_dir(dir_path) {
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_file() {
+                        let mode = metadata.permissions().mode();
+                        // Check if permissions don't match target
+                        if (mode & 0o777) != target_permissions {
+                            let mut perms = metadata.permissions();
+                            perms.set_mode(target_permissions);
+                            if let Err(e) = fs::set_permissions(entry.path(), perms) {
+                                warn!("Failed to set permissions on {:?}: {}", entry.path(), e);
+                            } else {
+                                info!("FS-004: Set permissions {:o} on {:?}", target_permissions, entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn populate_filesystem_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> anyhow::Result<()> {
     use cmd_sandbox_common::policy_shared::FilesystemPolicy;
     use aya::maps::Array;
@@ -412,9 +463,10 @@ fn populate_filesystem_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> an
         }
     }
     
-    // FS-004: Mount the directory with noexec to prevent execution of any files
-    // This is more robust than eBPF LSM hooks as it's enforced at the filesystem level
-    mount_noexec(allowed_path)?;
+    // FS-004: Mount the directory with noexec to prevent direct execution (if prevent_execution is enabled)
+    if config.filesystem_policies.prevent_execution {
+        mount_noexec(allowed_path)?;
+    }
     
     // Create filesystem policy
     let mut policy = FilesystemPolicy {
@@ -434,6 +486,17 @@ fn populate_filesystem_policy(ebpf: &mut aya::Ebpf, config: &PolicyConfig) -> an
     
     println!("✓ Filesystem policy configured:");
     println!("  Allowed write directory: {}", allowed_path);
+    
+    // FS-004: Start background task to set permissions on downloaded files (if enabled)
+    if config.filesystem_policies.enable_permission_watcher {
+        let allowed_path_clone = allowed_path.to_string();
+        let target_perms = config.filesystem_policies.get_watcher_mode();
+        let perms_str = config.filesystem_policies.watcher_permissions.clone();
+        tokio::spawn(async move {
+            strip_exec_permissions_watcher(&allowed_path_clone, target_perms).await;
+        });
+        println!("✓ Permission watcher enabled (mode: {})", perms_str);
+    }
     
     Ok(())
 }

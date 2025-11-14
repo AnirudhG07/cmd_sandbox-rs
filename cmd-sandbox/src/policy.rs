@@ -30,6 +30,21 @@ pub struct FilesystemPolicies {
     pub max_total_storage: u64,
     pub blocked_paths: Vec<String>,
     pub prevent_execution: bool,
+    #[serde(default)]
+    pub enable_permission_watcher: bool,
+    #[serde(default = "default_watcher_permissions")]
+    pub watcher_permissions: String,
+}
+
+fn default_watcher_permissions() -> String {
+    "600".to_string()  // Read/write for owner only
+}
+
+impl FilesystemPolicies {
+    /// Parse the watcher_permissions string (e.g., "600") to u32 mode
+    pub fn get_watcher_mode(&self) -> u32 {
+        u32::from_str_radix(&self.watcher_permissions, 8).unwrap_or(0o600)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -107,6 +122,8 @@ impl PolicyConfig {
                     "/usr/".to_string(),
                 ],
                 prevent_execution: true,
+                enable_permission_watcher: false,
+                watcher_permissions: "600".to_string(),
             },
             memory_policies: MemoryPolicies {
                 max_memory: 100 * 1024 * 1024, // 100MB
@@ -160,11 +177,6 @@ impl PolicyConfig {
         }
 
         Ok(())
-    }
-
-    /// Get formatted memory limit for cgroup
-    pub fn get_memory_limit_string(&self) -> String {
-        format!("{}M", self.memory_policies.max_memory / (1024 * 1024))
     }
 
     /// Get formatted CPU limit for cgroup

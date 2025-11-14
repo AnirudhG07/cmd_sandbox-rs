@@ -475,7 +475,7 @@ pub async fn test_net001_non_whitelisted_domain(suite: &mut TestSuite) {
             suite.record(TestResult {
                 name: "NET-001: Non-whitelisted domain blocked".to_string(),
                 passed: true,
-                message: format!("Non-whitelisted domain blocked (timeout/error)"),
+                message: format!("Non-whitelisted domain blocked (timeout/error). Error: {}", e),
                 duration: start.elapsed(),
             });
         }

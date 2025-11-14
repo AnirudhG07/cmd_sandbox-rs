@@ -1,4 +1,3 @@
-use anyhow::Result;
 use colored::Colorize;
 use std::process::Command;
 use std::path::Path;
@@ -71,7 +70,7 @@ pub fn test_fs001_write_to_tmp_root(suite: &mut TestSuite) {
     // Clean up any existing file
     let _ = fs::remove_file(output_file);
     
-    let output = Command::new("curl")
+    let _output = Command::new("curl")
         .args(&[
             "-o", output_file,
             "https://example.com",
@@ -114,7 +113,7 @@ pub fn test_fs001_write_to_home(suite: &mut TestSuite) {
     // Clean up any existing file
     let _ = fs::remove_file(&output_file);
     
-    let output = Command::new("curl")
+    let _output = Command::new("curl")
         .args(&[
             "-o", &output_file,
             "https://example.com",
@@ -159,7 +158,7 @@ pub fn test_fs003_max_file_size(suite: &mut TestSuite) {
     let _ = fs::remove_file(output_file);
     
     // Try to download a large file (100MB test file)
-    let output = Command::new("curl")
+    let _output = Command::new("curl")
         .args(&[
             "-o", output_file,
             "https://ash-speed.hetzner.com/100MB.bin",
@@ -318,7 +317,7 @@ pub fn test_fs006_block_etc_write(suite: &mut TestSuite) {
     let start = Instant::now();
     let output_file = "/etc/blocked_test.html";
     
-    let output = Command::new("curl")
+    let _output = Command::new("curl")
         .args(&[
             "-o", output_file,
             "https://example.com",
@@ -349,16 +348,15 @@ pub fn test_fs006_block_etc_write(suite: &mut TestSuite) {
 }
 
 /// Test FS-006.2: Attempt to read from /etc should work (read is allowed)
-pub fn test_fs006_read_etc_allowed(suite: &mut TestSuite) {
+pub fn test_fs006_read_etc_allowed(_suite: &mut TestSuite) {
     println!("{}", "[FS-006.2] Testing read from /etc (should be ALLOWED)".bold());
     println!("  Policy: Block writes to /etc, but reads are allowed");
     println!("  Expected: Read operations should succeed");
     println!("---");
     
-    let start = Instant::now();
     let test_file = "/etc/hostname";
     
-    let (passed, message) = if Path::new(test_file).exists() {
+    let (passed, _message) = if Path::new(test_file).exists() {
         match fs::read_to_string(test_file) {
             Ok(content) => {
                 (true, format!("Read from /etc allowed (content: {})", content.trim()))
@@ -383,7 +381,7 @@ pub fn test_fs006_block_bin_write(suite: &mut TestSuite) {
     let start = Instant::now();
     let output_file = "/bin/blocked_test";
     
-    let output = Command::new("curl")
+    let _output = Command::new("curl")
         .args(&[
             "-o", output_file,
             "https://example.com",
@@ -422,7 +420,7 @@ pub fn test_fs006_block_usr_write(suite: &mut TestSuite) {
     let start = Instant::now();
     let output_file = "/usr/blocked_test";
     
-    let output = Command::new("curl")
+    let _output = Command::new("curl")
         .args(&[
             "-o", output_file,
             "https://example.com",

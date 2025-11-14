@@ -20,7 +20,9 @@
     "max_file_size": 10485760,
     "max_total_storage": 52428800,
     "blocked_paths": ["/etc/", "/bin/", "/sbin/", "/usr/"],
-    "prevent_execution": true
+    "prevent_execution": true,
+    "enable_permission_watcher": true,
+    "watcher_permissions": "600"
   },
   "memory_policies": {
     "max_memory": 10485760,
