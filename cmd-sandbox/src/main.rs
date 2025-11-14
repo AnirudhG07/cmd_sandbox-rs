@@ -224,12 +224,6 @@ async fn main() -> anyhow::Result<()> {
     println!("✓ sys_enter_openat tracepoint attached (FS-001: path-based write restrictions)");
     println!("  Note: Tracepoint provides path checking, LSM hooks provide enforcement");
     
-    // Attach tracepoint for write syscall to enforce file size limits (FS-003/MEM-001)
-    let program: &mut TracePoint = ebpf.program_mut("sys_enter_write").unwrap().try_into()?;
-    program.load()?;
-    program.attach("syscalls", "sys_enter_write")?;
-    println!("✓ sys_enter_write tracepoint attached (FS-003/MEM-001: 10MB file size limit)");
-    
     // Populate network policy map from configuration
     populate_network_policy(&mut ebpf, &config)?;
     
