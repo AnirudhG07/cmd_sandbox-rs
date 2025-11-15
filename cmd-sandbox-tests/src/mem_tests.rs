@@ -1,6 +1,7 @@
 use crate::{TestResult, TestSuite};
 use colored::Colorize;
 use std::fs;
+use std::path::Path;
 use std::time::Instant;
 use std::os::unix::process::ExitStatusExt;
 use anyhow::Result;
@@ -275,10 +276,6 @@ pub async fn test_mem005_block_exec_mmap(suite: &mut TestSuite) {
     // A simpler test: just run curl and check if it can still work with the restriction.
     // The real test is that it CANNOT mmap with PROT_EXEC.
     
-    // Create a simple test: try to download something with curl
-    // If MEM-005 is TOO restrictive, curl won't work at all (shared libraries need PROT_EXEC)
-    // If it's correctly implemented, curl should work but not be able to create NEW exec pages
-    
     let output = Command::new("curl")
         .args(&[
             "-s",
@@ -353,66 +350,26 @@ pub async fn test_mem005_block_exec_mmap(suite: &mut TestSuite) {
 // ============================================================================
 pub async fn test_mem006_stack_size_limit(suite: &mut TestSuite) {
     println!("{}", "Test MEM-006: Verify stack size limit is enforced at 8MB".bold());
-    println!("Command: Create C program that allocates large stack arrays");
+    println!("Command: Run pre-compiled test_stack_limit binary (allocates >8MB stack)");
     println!("---");
 
     let start = Instant::now();
     
-    // Create a C program that tries to use more than 8MB of stack
-    let c_program = r#"
-#include <stdio.h>
-#include <string.h>
-
-void use_stack(int depth) {
-    // Each call uses ~1MB of stack (array of 250000 ints = ~1MB)
-    int large_array[250000];
-    memset(large_array, 0, sizeof(large_array));
-    large_array[0] = depth;
+    // Use pre-compiled binary from test_helpers directory
+    // This avoids the FS-004 policy that prevents execution of files in /tmp/curl_downloads/
+    let binary_path = "cmd-sandbox-tests/test_helpers/test_stack_limit";
     
-    if (depth < 20) {  // Try to use 20MB total
-        use_stack(depth + 1);
-    }
-}
-
-int main() {
-    printf("Attempting to use >8MB stack...\n");
-    use_stack(0);
-    printf("Stack usage succeeded (should not reach here)\n");
-    return 0;
-}
-"#;
-    
-    let source_path = "/tmp/curl_downloads/stack_test.c";
-    let binary_path = "/tmp/curl_downloads/stack_test";
-    
-    // Write the C source
-    if let Err(e) = fs::write(source_path, c_program) {
+    // Check if the test binary exists
+    if !Path::new(binary_path).exists() {
         suite.record(TestResult {
             name: "MEM-006: Stack size limit".to_string(),
             passed: false,
-            message: format!("Failed to create test program: {}", e),
+            message: format!("Test binary not found: {} (run: gcc -o {} test_stack_limit.c)", binary_path, binary_path),
             duration: start.elapsed(),
         });
+        println!("⚠️  Test binary not found - skipping test");
+        println!("   Compile with: cd cmd-sandbox-tests/test_helpers && gcc -o test_stack_limit test_stack_limit.c");
         println!();
-        return;
-    }
-    
-    // Compile it
-    let compile = Command::new("gcc")
-        .args(&["-o", binary_path, source_path])
-        .output()
-        .await;
-    
-    if compile.is_err() || !compile.as_ref().unwrap().status.success() {
-        suite.record(TestResult {
-            name: "MEM-006: Stack size limit".to_string(),
-            passed: false,
-            message: "Failed to compile test program (gcc not available?)".to_string(),
-            duration: start.elapsed(),
-        });
-        println!("⚠️  GCC not available or compilation failed - skipping test");
-        println!();
-        let _ = fs::remove_file(source_path);
         return;
     }
     
@@ -420,10 +377,6 @@ int main() {
     let output = Command::new(binary_path)
         .output()
         .await;
-    
-    // Cleanup
-    let _ = fs::remove_file(source_path);
-    let _ = fs::remove_file(binary_path);
     
     match output {
         Ok(output) => {

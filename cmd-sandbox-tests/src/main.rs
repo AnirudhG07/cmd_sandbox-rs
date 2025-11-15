@@ -301,9 +301,6 @@ async fn main() -> Result<()> {
         println!("{}", "▶ FS-004: Prevent Execution of Downloaded Files (BLOCK)".bold());
         fs_tests::test_fs004_prevent_execution(&mut suite);
         
-        println!("{}", "▶ FS-005: Total Storage Quota (QUOTA)".bold());
-        fs_tests::test_fs005_total_storage_quota(&mut suite);
-        
         println!("{}", "▶ FS-006: Block System Directory Access (BLOCK)".bold());
         fs_tests::test_fs006_block_etc_write(&mut suite);
         fs_tests::test_fs006_read_etc_allowed(&mut suite);

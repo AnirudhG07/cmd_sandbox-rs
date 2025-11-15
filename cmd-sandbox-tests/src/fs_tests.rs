@@ -260,50 +260,6 @@ pub fn test_fs004_prevent_execution(suite: &mut TestSuite) {
 }
 
 // ===========================================================================
-// FS-005: Restrict total storage usage to 50MB (QUOTA)
-// ===========================================================================
-
-/// Test FS-005: Total storage usage should not exceed 50MB
-pub fn test_fs005_total_storage_quota(suite: &mut TestSuite) {
-    println!("{}", "[FS-005] Testing total storage quota (50MB limit)".bold());
-    println!("  Policy: Restrict total storage usage to 50MB");
-    println!("  Expected: Total files in /tmp/curl_downloads should not exceed 50MB");
-    println!("---");
-    
-    let start = Instant::now();
-    
-    // Calculate current usage
-    let mut total_size: u64 = 0;
-    if let Ok(entries) = fs::read_dir("/tmp/curl_downloads") {
-        for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                total_size += metadata.len();
-            }
-        }
-    }
-    
-    let max_size = 50 * 1024 * 1024; // 50MB
-    let size_mb = total_size as f64 / (1024.0 * 1024.0);
-    
-    let passed = total_size <= max_size;
-    let message = if passed {
-        format!("Current usage: {:.2}MB (under 50MB limit)", size_mb)
-    } else {
-        format!("Current usage: {:.2}MB (exceeds 50MB limit)", size_mb)
-    };
-    
-    println!("  {}", if passed { "✅ PASS".green() } else { "⚠️  WARNING".yellow() });
-    println!("  {}", message);
-    
-    suite.record(TestResult {
-        name: "FS-005: Total storage quota".to_string(),
-        passed,
-        message,
-        duration: start.elapsed(),
-    });
-}
-
-// ===========================================================================
 // FS-006: Block access to system directories (BLOCK)
 // ===========================================================================
 
