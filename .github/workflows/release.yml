@@ -2,10 +2,9 @@ name: Build and Release
 
 on:
   push:
-  pull_request:
     branches:
-      - main
-      - "v*"
+      - main # Build on every push to main
+  workflow_dispatch: # Allow manual trigger
 
 permissions:
   contents: write
@@ -52,12 +51,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc
-      
+
       - name: Clean build artifacts
         run: |
           cargo clean
           rm -rf target/
-      
+
       - name: Build cmd-sandbox (x86_64)
         if: matrix.arch == 'x86_64'
         run: |
@@ -138,16 +137,45 @@ jobs:
         with:
           name: cmd-sandbox-aarch64
 
-      - name: Create Release
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
+      - name: Get short commit SHA
+        id: sha
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Delete existing nightly release
+        continue-on-error: true
+        run: |
+          gh release delete nightly --yes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete existing nightly tag
+        continue-on-error: true
+        run: |
+          git push --delete origin nightly || true
+
+      - name: Create/Update Nightly Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: nightly
+          name: "Nightly Build"
           files: |
             cmd-sandbox-x86_64.tar.gz
             cmd-sandbox-aarch64.tar.gz
           body: |
-            ## cmd_sandbox-rs Release
+            ## cmd_sandbox-rs Nightly Build
 
-            Pre-built binaries for Linux x86_64 and ARM64.
+            **Latest build from main branch**
+            - Built: ${{ steps.date.outputs.date }}
+            - Commit: [`${{ steps.sha.outputs.sha }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+            - Branch: `${{ github.ref_name }}`
+
+            > **Note**: This is an automated nightly build. It contains the latest code from the main branch and may be unstable.
+
+            ---
 
             ### Installation
 
@@ -173,6 +201,6 @@ jobs:
 
             See [README.md](https://github.com/AnirudhG07/curl_sandbox-rs/blob/main/README.md) for full documentation.
           draft: false
-          prerelease: false
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
