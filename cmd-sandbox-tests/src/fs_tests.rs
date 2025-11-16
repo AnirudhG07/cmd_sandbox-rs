@@ -28,7 +28,7 @@ pub fn test_fs001_write_to_allowed_dir(suite: &mut TestSuite) {
     let _ = fs::remove_file(output_file);
     
     let output = Command::new("curl")
-        .args(&[
+        .args([
             "-o", output_file,
             "https://example.com",
             "--max-time", "10",
@@ -71,7 +71,7 @@ pub fn test_fs001_write_to_tmp_root(suite: &mut TestSuite) {
     let _ = fs::remove_file(output_file);
     
     let _output = Command::new("curl")
-        .args(&[
+        .args([
             "-o", output_file,
             "https://example.com",
             "--max-time", "10",
@@ -114,7 +114,7 @@ pub fn test_fs001_write_to_home(suite: &mut TestSuite) {
     let _ = fs::remove_file(&output_file);
     
     let _output = Command::new("curl")
-        .args(&[
+        .args([
             "-o", &output_file,
             "https://example.com",
             "--max-time", "10",
@@ -159,7 +159,7 @@ pub fn test_fs003_max_file_size(suite: &mut TestSuite) {
     
     // Try to download a large file (100MB test file)
     let _output = Command::new("curl")
-        .args(&[
+        .args([
             "-o", output_file,
             "https://ash-speed.hetzner.com/100MB.bin",
             "--max-time", "15",
@@ -274,7 +274,7 @@ pub fn test_fs006_block_etc_write(suite: &mut TestSuite) {
     let output_file = "/etc/blocked_test.html";
     
     let _output = Command::new("curl")
-        .args(&[
+        .args([
             "-o", output_file,
             "https://example.com",
             "--max-time", "10",
@@ -338,7 +338,7 @@ pub fn test_fs006_block_bin_write(suite: &mut TestSuite) {
     let output_file = "/bin/blocked_test";
     
     let _output = Command::new("curl")
-        .args(&[
+        .args([
             "-o", output_file,
             "https://example.com",
             "--max-time", "10",
@@ -377,7 +377,7 @@ pub fn test_fs006_block_usr_write(suite: &mut TestSuite) {
     let output_file = "/usr/blocked_test";
     
     let _output = Command::new("curl")
-        .args(&[
+        .args([
             "-o", output_file,
             "https://example.com",
             "--max-time", "10",

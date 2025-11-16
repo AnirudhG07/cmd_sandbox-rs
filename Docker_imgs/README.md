@@ -21,6 +21,7 @@ The Docker image automatically builds for your host architecture (x86_64 or ARM6
 ## What's Included
 
 The container comes with:
+
 - Ubuntu 24.04 base image
 - Rust toolchain (stable + nightly)
 - bpf-linker pre-installed
@@ -118,6 +119,7 @@ cmd_sandbox test
 ### Linux Host Required
 
 This container requires a **Linux host** with:
+
 - Kernel 5.7+ with BPF LSM enabled
 - cgroup v2 support
 - Docker with privileged container support
@@ -141,6 +143,7 @@ docker buildx build --platform linux/amd64 -f Docker_imgs/Dockerfile -t cmd-sand
 ### Performance
 
 Building the container takes time (10-20 minutes) due to:
+
 - Rust toolchain installation
 - bpf-linker compilation
 - Project compilation
@@ -152,7 +155,7 @@ Once built, starting containers is instant.
 If you just want to try the sandbox quickly without Docker, use the standalone installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AnirudhG07/curl_sandbox-rs/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AnirudhG07/cmd_sandbox-rs/main/install.sh | bash
 ```
 
 This downloads pre-built binaries and installs in seconds (no Rust/Docker needed).

@@ -39,7 +39,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     chmod -R a+w $RUSTUP_HOME $CARGO_HOME
 
 # Create workspace directory
-WORKDIR /workspace/curl_sandbox-rs
+WORKDIR /workspace/cmd_sandbox-rs
 
 # Copy the entire project
 COPY . .
@@ -99,7 +99,7 @@ RUN ARCH=$(uname -m) && \
     echo 'echo "  cmd_sandbox run      # Start the sandbox"' >> /root/.bashrc && \
     echo 'echo "  cmd_sandbox test     # Run tests (in another terminal)"' >> /root/.bashrc && \
     echo 'echo ""' >> /root/.bashrc && \
-    echo 'echo "Project location: /workspace/curl_sandbox-rs"' >> /root/.bashrc && \
+    echo 'echo "Project location: /workspace/cmd_sandbox-rs"' >> /root/.bashrc && \
     echo 'echo "Architecture: $(uname -m)"' >> /root/.bashrc && \
     echo 'echo ""' >> /root/.bashrc
 

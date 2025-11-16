@@ -6,9 +6,9 @@ use std::process::Command;
 use std::time::Duration;
 
 // Test modules organized by policy category
-mod net_tests;
-mod mem_tests;
 mod fs_tests;
+mod mem_tests;
+mod net_tests;
 mod sec_tests;
 
 #[derive(Debug)]
@@ -59,8 +59,14 @@ impl TestSuite {
         println!("{}", "═".repeat(70));
         println!();
         println!("  Total Tests:   {}", self.total);
-        println!("  {}", format!("✅ Passed:      {}", self.passed).green().bold());
-        println!("  {}", format!("❌ Failed:      {}", self.failed).red().bold());
+        println!(
+            "  {}",
+            format!("✅ Passed:      {}", self.passed).green().bold()
+        );
+        println!(
+            "  {}",
+            format!("❌ Failed:      {}", self.failed).red().bold()
+        );
         println!("  {}", format!("⊘  Skipped:     {}", self.skipped).yellow());
         println!();
 
@@ -76,12 +82,16 @@ impl TestSuite {
         if self.failed == 0 && self.passed > 0 {
             println!(
                 "  {}",
-                "🎉 ALL TESTS PASSED! Sandbox is working correctly.".green().bold()
+                "🎉 ALL TESTS PASSED! Sandbox is working correctly."
+                    .green()
+                    .bold()
             );
         } else if self.failed > 0 {
             println!(
                 "  {}",
-                "⚠️  SOME TESTS FAILED. Review output above for details.".red().bold()
+                "⚠️  SOME TESTS FAILED. Review output above for details."
+                    .red()
+                    .bold()
             );
         }
         println!();
@@ -94,7 +104,7 @@ fn check_sandbox_running() -> Result<bool> {
         .args(["-f", "cmd-sandbox"])
         .output()
         .context("Failed to check if sandbox is running")?;
-    
+
     Ok(output.status.success())
 }
 
@@ -111,7 +121,7 @@ fn get_cgroup_value(file: &str) -> Result<String> {
 
 fn should_run_test(test_filter: &Option<String>, category: &str) -> bool {
     match test_filter {
-        None => true,  // Run all tests if no filter specified
+        None => true, // Run all tests if no filter specified
         Some(filter) => filter == category || filter == "all",
     }
 }
@@ -126,14 +136,39 @@ async fn main() -> Result<()> {
         None
     };
 
-    println!("{}", "╔════════════════════════════════════════════════════════════════╗".cyan().bold());
-    println!("{}", "║     curl_sandbox-rs - Comprehensive Security Test Suite       ║".cyan().bold());
-    println!("{}", "║                        Version 1.0                             ║".cyan().bold());
-    println!("{}", "╚════════════════════════════════════════════════════════════════╝".cyan().bold());
+    println!(
+        "{}",
+        "╔════════════════════════════════════════════════════════════════╗"
+            .cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║     cmd_sandbox-rs - Comprehensive Security Test Suite         ║"
+            .cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "║                        Version 1.0                             ║"
+            .cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "╚════════════════════════════════════════════════════════════════╝"
+            .cyan()
+            .bold()
+    );
     println!();
 
     if let Some(ref filter) = test_filter {
-        println!("{}", format!("🎯 Running only: {} tests", filter.to_uppercase()).yellow().bold());
+        println!(
+            "{}",
+            format!("🎯 Running only: {} tests", filter.to_uppercase())
+                .yellow()
+                .bold()
+        );
         println!();
     }
 
@@ -151,7 +186,12 @@ async fn main() -> Result<()> {
     println!("{}", "  ✓ Sandbox process is running".green());
 
     if !check_cgroup_exists()? {
-        eprintln!("{}", "  ❌ ERROR: cgroup not found at /sys/fs/cgroup/cmd_sandbox".red().bold());
+        eprintln!(
+            "{}",
+            "  ❌ ERROR: cgroup not found at /sys/fs/cgroup/cmd_sandbox"
+                .red()
+                .bold()
+        );
         std::process::exit(1);
     }
     println!("{}", "  ✓ Cgroup exists".green());
@@ -185,7 +225,7 @@ async fn main() -> Result<()> {
         net_tests::test_net001_whitelisted_domain(&mut suite).await;
         net_tests::test_net001_non_whitelisted_domain(&mut suite).await;
 
-        // NET-002: Protocol Blocking  
+        // NET-002: Protocol Blocking
         println!("{}", "▶ NET-002: Block Non-HTTP Protocols".bold());
         net_tests::test_net002_ftp_blocked(&mut suite).await;
         net_tests::test_net002_sftp_blocked(&mut suite).await;
@@ -216,9 +256,12 @@ async fn main() -> Result<()> {
         // MEM-001: Memory Limit
         println!("{}", "▶ MEM-001: Memory Limit (10MB)".bold());
         mem_tests::test_mem001_memory_limit(&mut suite).await;
-        
+
         // MEM-001 + FS-003: File Size Limit (10MB)
-        println!("{}", "▶ MEM-001/FS-003: File Size Limit (10MB download)".bold());
+        println!(
+            "{}",
+            "▶ MEM-001/FS-003: File Size Limit (10MB download)".bold()
+        );
         mem_tests::test_mem001_file_size_limit(&mut suite).await;
 
         // MEM-003: Wall Clock Timeout
@@ -249,22 +292,33 @@ async fn main() -> Result<()> {
         println!();
 
         // SEC-001: Run as non-privileged user
-        println!("{}", "▶ SEC-001: Run as Non-Privileged User (nobody)".bold());
+        println!(
+            "{}",
+            "▶ SEC-001: Run as Non-Privileged User (nobody)".bold()
+        );
         sec_tests::test_sec001_run_as_nobody(&mut suite).await;
 
         // SEC-002: Environment Variable Controls (PASSWORD/KEY/SECRET)
-        println!("{}", "▶ SEC-002: Block Sensitive Environment Variables (PASSWORD/KEY/SECRET)".bold());
+        println!(
+            "{}",
+            "▶ SEC-002: Block Sensitive Environment Variables (PASSWORD/KEY/SECRET)".bold()
+        );
         sec_tests::test_sec002_block_password_env(&mut suite).await;
         sec_tests::test_sec002_block_key_env(&mut suite).await;
         sec_tests::test_sec002_block_secret_env(&mut suite).await;
 
-
         // SEC-003: Prevent network interface configuration changes
-        println!("{}", "▶ SEC-003: Prevent Network Interface Configuration".bold());
+        println!(
+            "{}",
+            "▶ SEC-003: Prevent Network Interface Configuration".bold()
+        );
         sec_tests::test_sec003_block_net_admin(&mut suite).await;
 
         // SEC-004: Restrict signal handling (TERM, INT only)
-        println!("{}", "▶ SEC-004: Restrict Signal Handling (TERM/INT only)".bold());
+        println!(
+            "{}",
+            "▶ SEC-004: Restrict Signal Handling (TERM/INT only)".bold()
+        );
         sec_tests::test_sec004_allow_sigterm(&mut suite).await;
         sec_tests::test_sec004_allow_sigint(&mut suite).await;
         sec_tests::test_sec004_block_other_signals(&mut suite).await;
@@ -273,7 +327,6 @@ async fn main() -> Result<()> {
         println!("{}", "▶ SEC-005: Block Kernel Memory/Module Access".bold());
         sec_tests::test_sec005_block_kernel_access(&mut suite).await;
         sec_tests::test_sec005_block_module_loading(&mut suite).await;
-
 
         // Additional Security Tests (LD_PRELOAD/LD_LIBRARY_PATH)
         println!("{}", "▶ SEC-EXTRA: Block Dangerous Loader Variables".bold());
@@ -289,19 +342,28 @@ async fn main() -> Result<()> {
         println!("{}", "📁 FILESYSTEM POLICIES".bold().cyan());
         println!("{}", "═".repeat(70));
         println!();
-        
-        println!("{}", "▶ FS-001: Write Directory Restrictions (RESTRICT)".bold());
+
+        println!(
+            "{}",
+            "▶ FS-001: Write Directory Restrictions (RESTRICT)".bold()
+        );
         fs_tests::test_fs001_write_to_allowed_dir(&mut suite);
         fs_tests::test_fs001_write_to_tmp_root(&mut suite);
         fs_tests::test_fs001_write_to_home(&mut suite);
-        
+
         println!("{}", "▶ FS-003: Maximum File Download Size (QUOTA)".bold());
         fs_tests::test_fs003_max_file_size(&mut suite);
-        
-        println!("{}", "▶ FS-004: Prevent Execution of Downloaded Files (BLOCK)".bold());
+
+        println!(
+            "{}",
+            "▶ FS-004: Prevent Execution of Downloaded Files (BLOCK)".bold()
+        );
         fs_tests::test_fs004_prevent_execution(&mut suite);
-        
-        println!("{}", "▶ FS-006: Block System Directory Access (BLOCK)".bold());
+
+        println!(
+            "{}",
+            "▶ FS-006: Block System Directory Access (BLOCK)".bold()
+        );
         fs_tests::test_fs006_block_etc_write(&mut suite);
         fs_tests::test_fs006_read_etc_allowed(&mut suite);
         fs_tests::test_fs006_block_bin_write(&mut suite);

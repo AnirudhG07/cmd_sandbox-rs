@@ -46,12 +46,13 @@ All enforcement happens at the kernel level - no wrapper scripts, no LD_PRELOAD 
 
 ### Automatic Installation (Recommended)
 
-You can run an interactive install script which will set you up for running the sandbox, from scratch by installing all dependencies(and asking permissions for it). Note that to enable BPF LSM, you may need to reboot as the installation script may guide you through, please do not ignore it.
+To install the sandbox command, please run the below script. You will have to install some dependencies like enabling BPF LSM. Note that to enable BPF LSM, you may need to reboot as the installation script may guide you through, please do not ignore it.
+
+The sandbox will not be built since a prebuild binary from github will be installed, depending on the architecture of your machine.
+
 
 ```bash
-git clone https://github.com/AnirudhG07/cmd_sandbox-rs.git
-cd cmd_sandbox-rs
-bash install.sh
+curl -fsSL https://raw.githubusercontent.com/AnirudhG07/cmd_sandbox-rs/main/install.sh | bash
 ```
 
 Then add to PATH (if not already):
@@ -70,31 +71,16 @@ cmd_sandbox help     # Show help
 
 ### Manual Build
 
-<details>
-<summary>If you prefer to build manually, check the below steps -
-</summary>
+You can run an interactive install script which will set you up for running the sandbox, from scratch by installing all dependencies(and asking permissions for it). Note that to enable BPF LSM, you may need to reboot as the installation script may guide you through, please do not ignore it.
 
 ```bash
-# Install Rust toolchains
-rustup toolchain install stable
-rustup toolchain install nightly --component rust-src
-cargo install bpf-linker
-
-# Clone and build
 git clone https://github.com/AnirudhG07/cmd_sandbox-rs.git
 cd cmd_sandbox-rs
-cargo build --release
-
-# Compile test helper binaries
-cd cmd-sandbox-tests/test_helpers
-gcc -o test_stack_limit test_stack_limit.c
-gcc -o test_kernel_access test_kernel_access.c
-gcc -o test_net_config test_net_config.c
-chmod +x test_*
-cd ../..
+bash install_manual.sh
 ```
 
-</details>
+Please follow all the steps to install all dependencies which will build the project locally in your computer which you can run.
+
 
 ## Docker Container
 

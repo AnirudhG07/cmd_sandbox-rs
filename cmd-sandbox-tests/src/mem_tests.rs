@@ -137,7 +137,7 @@ pub async fn test_mem003_wall_clock_timeout(suite: &mut TestSuite) {
     match result {
         Ok((status, _)) => {
             // Check if timing is within acceptable range (9.5-11.5s for 10s timeout)
-            let timing_correct = duration_secs >= 9.5 && duration_secs <= 11.5;
+            let timing_correct = (9.5..=11.5).contains(&duration_secs);
             
             if timing_correct {
                 suite.record(TestResult {
@@ -277,7 +277,7 @@ pub async fn test_mem005_block_exec_mmap(suite: &mut TestSuite) {
     // The real test is that it CANNOT mmap with PROT_EXEC.
     
     let output = Command::new("curl")
-        .args(&[
+        .args([
             "-s",
             "-o", "/dev/null",
             "-w", "%{http_code}",
