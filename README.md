@@ -7,7 +7,7 @@ We use Aya-rs which is eBPF, but in Rust, and why not use Rust because of its me
 This project was done under the Course [E0256 IISc Bengaluru](https://www.csa.iisc.ac.in/~vg/teaching/256/) instructed under Professor Vinod Ganapathy.
 
 > [!Important]
-> This project was developed and tested on Ubuntu 24.04
+> This project was developed and tested on Ubuntu 24.04 on both x86_64 and ARM64 architectures.
 
 ## Features of Sandbox
 
@@ -37,9 +37,11 @@ All enforcement happens at the kernel level - no wrapper scripts, no LD_PRELOAD 
 **Runtime:**
 - Root/sudo access (for BPF and cgroup operations)
 
-## Quick Install
+## Installation
 
-One-line installation (installs Rust if needed, builds everything, creates `cmd_sandbox` command):
+### Quick Installation(Recommended)
+
+You can run an interactive install script which will set you up for running the sandbox, from scratch by installing all dependencies(and asking permissions for it). Note that to enable BPF LSM, you may need to reboot as the installation script may guide you through, please do not ignore it.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AnirudhG07/curl_sandbox-rs/main/install.sh | bash
@@ -57,7 +59,7 @@ cmd_sandbox test     # Run all tests
 cmd_sandbox help     # Show help
 ```
 
-## Manual Build
+### Manual Build
 
 If you prefer to build manually:
 
@@ -80,6 +82,31 @@ gcc -o test_net_config test_net_config.c
 chmod +x test_*
 cd ../..
 ```
+
+## Docker Container
+
+Pre-built Docker container with all dependencies for testing without modifying your system. Works on both **x86_64** and **ARM64** architectures.
+
+```bash
+cd Docker_imgs
+
+# Build and run (auto-detects your architecture)
+./docker-run.sh build
+./docker-run.sh run
+
+# Or use docker-compose
+./docker-run.sh compose-up
+docker exec -it cmd-sandbox /bin/bash
+```
+
+**Inside the container:**
+- All dependencies pre-installed (Rust, bpf-linker, GCC)
+- Project pre-compiled and ready to use
+- Use `cmd_sandbox run` and `cmd_sandbox test`
+
+See [Docker_imgs/README.md](Docker_imgs/README.md) for detailed instructions.
+
+> **Note:** Docker containers require a Linux host with BPF LSM support. Docker Desktop on macOS/Windows will NOT work.
 
 ## Usage
 
