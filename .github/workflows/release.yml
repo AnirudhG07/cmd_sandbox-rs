@@ -2,9 +2,10 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*'  # Trigger on version tags like v1.0.0, v1.0.1, etc.
-  workflow_dispatch:  # Allow manual trigger
+  pull_request:
+    branches:
+      - main
+      - "v*"
 
 permissions:
   contents: write
@@ -22,46 +23,47 @@ jobs:
           - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             arch: aarch64
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-      
+
       - name: Install Rust nightly (for eBPF)
         run: |
           rustup toolchain install nightly --component rust-src
-      
+
       - name: Install bpf-linker
         run: |
           cargo install bpf-linker
-      
+
       - name: Install cross-compilation tools (ARM64 only)
         if: matrix.arch == 'aarch64'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           rustup target add aarch64-unknown-linux-gnu
-      
+
       - name: Install GCC for test helpers
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc
       
-      - name: Build eBPF programs
+      - name: Clean build artifacts
         run: |
-          cargo build --release -p cmd-sandbox-ebpf
+          cargo clean
+          rm -rf target/
       
       - name: Build cmd-sandbox (x86_64)
         if: matrix.arch == 'x86_64'
         run: |
           cargo build --release -p cmd-sandbox
           cargo build --release -p cmd-sandbox-tests
-      
+
       - name: Build cmd-sandbox (ARM64)
         if: matrix.arch == 'aarch64'
         env:
@@ -70,7 +72,7 @@ jobs:
         run: |
           cargo build --release --target aarch64-unknown-linux-gnu -p cmd-sandbox
           cargo build --release --target aarch64-unknown-linux-gnu -p cmd-sandbox-tests
-      
+
       - name: Build test helper binaries (x86_64)
         if: matrix.arch == 'x86_64'
         run: |
@@ -80,7 +82,7 @@ jobs:
           gcc -o test_net_config test_net_config.c
           chmod +x test_*
           cd ../..
-      
+
       - name: Build test helper binaries (ARM64)
         if: matrix.arch == 'aarch64'
         run: |
@@ -90,52 +92,52 @@ jobs:
           aarch64-linux-gnu-gcc -o test_net_config test_net_config.c
           chmod +x test_*
           cd ../..
-      
+
       - name: Package binaries (x86_64)
         if: matrix.arch == 'x86_64'
         run: |
           mkdir -p release-package/test_helpers
           cp target/release/cmd-sandbox release-package/
           cp target/release/cmd-sandbox-tests release-package/
-          cp cmd-sandbox-tests/test_helpers/test_* release-package/test_helpers/
+          cp -r cmd-sandbox-tests/test_helpers/test_* release-package/test_helpers/
           cp policy_config.json release-package/
           tar -czf cmd-sandbox-${{ matrix.arch }}.tar.gz -C release-package .
-      
+
       - name: Package binaries (ARM64)
         if: matrix.arch == 'aarch64'
         run: |
           mkdir -p release-package/test_helpers
           cp target/aarch64-unknown-linux-gnu/release/cmd-sandbox release-package/
           cp target/aarch64-unknown-linux-gnu/release/cmd-sandbox-tests release-package/
-          cp cmd-sandbox-tests/test_helpers/test_* release-package/test_helpers/
+          cp -r cmd-sandbox-tests/test_helpers/test_* release-package/test_helpers/
           cp policy_config.json release-package/
           tar -czf cmd-sandbox-${{ matrix.arch }}.tar.gz -C release-package .
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: cmd-sandbox-${{ matrix.arch }}
           path: cmd-sandbox-${{ matrix.arch }}.tar.gz
-  
+
   release:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Download x86_64 artifact
         uses: actions/download-artifact@v4
         with:
           name: cmd-sandbox-x86_64
-      
+
       - name: Download ARM64 artifact
         uses: actions/download-artifact@v4
         with:
           name: cmd-sandbox-aarch64
-      
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -144,31 +146,31 @@ jobs:
             cmd-sandbox-aarch64.tar.gz
           body: |
             ## cmd_sandbox-rs Release
-            
+
             Pre-built binaries for Linux x86_64 and ARM64.
-            
+
             ### Installation
-            
+
             **Quick install (recommended):**
             ```bash
             curl -fsSL https://raw.githubusercontent.com/AnirudhG07/curl_sandbox-rs/main/install.sh | bash
             ```
-            
+
             **Manual install:**
             1. Download the appropriate binary for your architecture
             2. Extract: `tar -xzf cmd-sandbox-*.tar.gz`
             3. Move binaries to PATH: `cp cmd-sandbox cmd-sandbox-tests ~/.local/bin/`
             4. Run: `cmd-sandbox run`
-            
+
             ### Requirements
             - Linux kernel 5.7+ with BPF LSM enabled
             - cgroup v2 mounted
             - Root/sudo access
-            
+
             ### Supported Architectures
             - ✅ x86_64 (amd64)
             - ✅ ARM64 (aarch64)
-            
+
             See [README.md](https://github.com/AnirudhG07/curl_sandbox-rs/blob/main/README.md) for full documentation.
           draft: false
           prerelease: false

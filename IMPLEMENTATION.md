@@ -1,8 +1,11 @@
 # Implementation Details
 
-This document provides technical details on how each policy is implemented in curl_sandbox-rs.
+This document provides technical details on how each policy is implemented in cmd_sandbox-rs.
+
+> Note: The code snippets below are simplified for clarity. Actual implementation may include additional features, error handling, optimizations, etc.
 
 ## Table of Contents
+
 - [Architecture Overview](#architecture-overview)
 - [Network Policies](#network-policies)
 - [Filesystem Policies](#filesystem-policies)
@@ -17,9 +20,9 @@ The sandbox uses a **hybrid multi-layer approach**:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         User Space                               │
+│                         User Space                              │
 ├─────────────────────────────────────────────────────────────────┤
-│  cmd-sandbox (Rust)                                              │
+│  cmd-sandbox (Rust)                                             │
 │  ├─ eBPF Loader Module        (ebpf_loader.rs)                  │
 │  ├─ Policy Loader Module      (policy_loader.rs)                │
 │  ├─ Filesystem Setup Module   (filesystem_setup.rs)             │
@@ -28,31 +31,31 @@ The sandbox uses a **hybrid multi-layer approach**:
 │  ├─ Resource Limits           (resource_limits.rs)              │
 │  └─ Policy Configuration      (policy.rs)                       │
 ├─────────────────────────────────────────────────────────────────┤
-│                        Kernel Space                              │
+│                        Kernel Space                             │
 ├─────────────────────────────────────────────────────────────────┤
-│  eBPF LSM Hooks                                                  │
-│  ├─ socket_connect     → Network policy (ports, IPs)           │
-│  ├─ file_mmap          → Memory policy (exec mappings)         │
-│  ├─ inode_create       → Filesystem policy (write paths)       │
-│  ├─ file_open          → Filesystem monitoring                 │
-│  ├─ bprm_check_security→ Execution control                     │
-│  ├─ capable            → Capability blocking                   │
-│  ├─ task_kill          → Signal restrictions                   │
-│  └─ kernel_read_file   → Kernel access blocking                │
-│                                                                   │
-│  cgroup v2 Controllers                                           │
-│  ├─ memory.max         → 10MB limit                            │
-│  └─ cpu.max            → 50% CPU limit                         │
+│  eBPF LSM Hooks                                                 │
+│  ├─ socket_connect     → Network policy (ports, IPs)            │
+│  ├─ file_mmap          → Memory policy (exec mappings)          │
+│  ├─ inode_create       → Filesystem policy (write paths)        │
+│  ├─ file_open          → Filesystem monitoring                  │
+│  ├─ bprm_check_security→ Execution control                      │
+│  ├─ capable            → Capability blocking                    │
+│  ├─ task_kill          → Signal restrictions                    │
+│  └─ kernel_read_file   → Kernel access blocking                 │
+│                                                                 │
+│  cgroup v2 Controllers                                          │
+│  ├─ memory.max         → 10MB limit                             │
+│  └─ cpu.max            → 50% CPU limit                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Why This Approach?
 
-| Layer | Technology | Purpose | Why? |
-|-------|-----------|---------|------|
-| **Kernel LSM** | eBPF | Syscall interception | Unbypassed enforcement at syscall level |
-| **Kernel cgroup** | cgroup v2 | Resource limits | Comprehensive accounting + OOM killer |
-| **Userspace** | Rust/tokio | Process monitoring | Wall-clock timeout + cgroup assignment |
+| Layer             | Technology | Purpose              | Why?                                    |
+| ----------------- | ---------- | -------------------- | --------------------------------------- |
+| **Kernel LSM**    | eBPF       | Syscall interception | Unbypassed enforcement at syscall level |
+| **Kernel cgroup** | cgroup v2  | Resource limits      | Comprehensive accounting + OOM killer   |
+| **Userspace**     | Rust/tokio | Process monitoring   | Wall-clock timeout + cgroup assignment  |
 
 ## Network Policies
 
@@ -67,26 +70,26 @@ The sandbox uses a **hybrid multi-layer approach**:
 pub fn socket_connect(socket: *mut sock, address: *const sockaddr, addrlen: c_int) -> i32 {
     // Get current task info
     let comm = get_current_comm();
-    
+
     // Only enforce on curl/wget
     if !matches_download_tool(&comm) {
         return 0;
     }
-    
+
     // Extract address family and port
     let sa_family = unsafe { (*address).sa_family };
-    
+
     match sa_family as u32 {
         AF_INET => {
             // IPv4 connection
             let addr_in = unsafe { *(address as *const sockaddr_in) };
             let port = u16::from_be(addr_in.sin_port);
-            
+
             match port {
                 80 => -EPERM,   // Block HTTP
                 443 => 0,       // Allow HTTPS
                 53 => 0,        // Allow DNS
-                _ => 0          // Allow other
+                _ => -EPERM     // Block others
             }
         }
         AF_UNIX => 0,  // Allow Unix sockets
@@ -96,6 +99,7 @@ pub fn socket_connect(socket: *mut sock, address: *const sockaddr, addrlen: c_in
 ```
 
 **How it works:**
+
 1. LSM hook intercepts every `connect()` syscall
 2. Checks if calling process is curl/wget (via comm name)
 3. Extracts port number from socket address structure
@@ -103,6 +107,7 @@ pub fn socket_connect(socket: *mut sock, address: *const sockaddr, addrlen: c_in
 5. Kernel sees `-EPERM` and fails the syscall with "Permission denied"
 
 **Key advantages:**
+
 - ✅ Cannot be bypassed (kernel-level enforcement)
 - ✅ No performance overhead (BPF JIT compilation)
 - ✅ Works before connection is established
@@ -116,9 +121,9 @@ pub fn socket_connect(socket: *mut sock, address: *const sockaddr, addrlen: c_in
 
 ```rust
 pub fn populate_whitelisted_ips(ebpf: &mut Ebpf, config: &PolicyConfig) -> Result<()> {
-    let mut whitelist_map: HashMap<_, u32, u8> = 
+    let mut whitelist_map: HashMap<_, u32, u8> =
         HashMap::try_from(ebpf.map_mut("WHITELISTED_IPS").unwrap())?;
-    
+
     for domain in &config.network_policies.allowed_domains {
         // Resolve domain to IPs
         let addr_string = format!("{}:443", domain);
@@ -137,6 +142,7 @@ pub fn populate_whitelisted_ips(ebpf: &mut Ebpf, config: &PolicyConfig) -> Resul
 ```
 
 **eBPF side** (`cmd-sandbox-ebpf/src/network.rs`):
+
 ```rust
 // Check if destination IP is whitelisted
 let dest_ip = u32::from_be(addr_in.sin_addr.s_addr);
@@ -156,19 +162,19 @@ if policy.enforce_whitelist == 1 {
 ```rust
 fn is_private_ip(ip: u32) -> bool {
     let ip_host = u32::from_be(ip);  // Convert to host byte order
-    
+
     // 10.0.0.0/8
     if (ip_host & 0xFF000000) == 0x0A000000 { return true; }
-    
+
     // 172.16.0.0/12
     if (ip_host & 0xFFF00000) == 0xAC100000 { return true; }
-    
+
     // 192.168.0.0/16
     if (ip_host & 0xFFFF0000) == 0xC0A80000 { return true; }
-    
+
     // 127.0.0.0/8 (localhost)
     if (ip_host & 0xFF000000) == 0x7F000000 { return true; }
-    
+
     false
 }
 ```
@@ -188,15 +194,15 @@ pub fn inode_create(dir: *mut inode, dentry: *mut dentry, mode: umode_t) -> i32 
     if !matches_download_tool(&comm) {
         return 0;
     }
-    
+
     // Get the path being created
     let path = get_dentry_path(dentry);
-    
+
     // Load allowed path from eBPF map
     let policy = unsafe { FILESYSTEM_POLICY.get(0) };
     let allowed_prefix = core::str::from_utf8(&policy.allowed_write_path)
-        .unwrap_or("/tmp/curl_downloads/");
-    
+        .unwrap_or("/tmp/cmd_downloads/");
+
     if path.starts_with(allowed_prefix) {
         return 0;  // Allow
     } else {
@@ -218,12 +224,12 @@ pub fn inode_create(dir: *mut inode, dentry: *mut dentry, mode: umode_t) -> i32 
 pub fn check_process_file_size(pid: &str) -> Option<u64> {
     let fd_dir = format!("/proc/{}/fd", pid);
     let mut max_size = 0u64;
-    
+
     if let Ok(entries) = fs::read_dir(&fd_dir) {
         for entry in entries.flatten() {
             if let Ok(link) = fs::read_link(entry.path()) {
                 if let Some(path_str) = link.to_str() {
-                    if path_str.starts_with("/tmp/curl_downloads/") {
+                    if path_str.starts_with("/tmp/cmd_downloads/") {
                         if let Ok(metadata) = fs::metadata(&link) {
                             max_size = max_size.max(metadata.len());
                         }
@@ -232,16 +238,17 @@ pub fn check_process_file_size(pid: &str) -> Option<u64> {
             }
         }
     }
-    
+
     if max_size > 0 { Some(max_size) } else { None }
 }
 ```
 
 **Enforcement** (in `monitor_processes()`):
+
 ```rust
 if let Some(file_size) = check_process_file_size(&pid) {
     if file_size > max_file_size {
-        warn!("FS-003: Killing {} - file size {:.2}MB exceeds limit", 
+        warn!("FS-003: Killing {} - file size {:.2}MB exceeds limit",
               pid, file_size as f64 / (1024.0 * 1024.0));
         kill_process(&pid);
     }
@@ -253,29 +260,31 @@ if let Some(file_size) = check_process_file_size(&pid) {
 **Implementation:** Two-layer approach
 
 **Layer 1: noexec mount** (`cmd-sandbox/src/filesystem_setup.rs`)
+
 ```rust
 pub fn mount_noexec(path: &str) -> Result<()> {
     // Bind mount directory to itself
     Command::new("mount")
         .args(&["--bind", path, path])
         .status()?;
-    
+
     // Remount with noexec flag
     Command::new("mount")
         .args(&["-o", "remount,noexec,nosuid,nodev", path])
         .status()?;
-    
+
     info!("FS-004: Mounted {} with noexec flag", path);
     Ok(())
 }
 ```
 
 **Layer 2: Permission watcher** (strips execute bits)
+
 ```rust
 pub async fn strip_exec_permissions_watcher(dir_path: &str, target_perms: u32) {
     loop {
         sleep(Duration::from_millis(100)).await;
-        
+
         if let Ok(entries) = fs::read_dir(dir_path) {
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {
@@ -305,26 +314,27 @@ pub async fn strip_exec_permissions_watcher(dir_path: &str, target_perms: u32) {
 ```rust
 pub fn setup_cgroup(config: &PolicyConfig) -> Result<()> {
     let cgroup_path = format!("{}/{}", CGROUP_BASE, CGROUP_NAME);
-    
+
     // Create cgroup directory
     fs::create_dir(&cgroup_path)?;
-    
+
     // Enable memory and CPU controllers
     let subtree_control = format!("{}/cgroup.subtree_control", CGROUP_BASE);
     fs::write(&subtree_control, "+memory +cpu")?;
-    
+
     // Set memory limit
     let memory_max = format!("{}/memory.max", cgroup_path);
     fs::write(&memory_max, config.memory_policies.max_memory.to_string())?;
-    
-    println!("✓ Memory limit: {}MB", 
+
+    println!("✓ Memory limit: {}MB",
              config.memory_policies.max_memory / (1024 * 1024));
-    
+
     Ok(())
 }
 ```
 
 **Process assignment:**
+
 ```rust
 pub fn move_to_cgroup(pid: &str) {
     let cgroup_procs = format!("{}/{}/cgroup.procs", CGROUP_BASE, CGROUP_NAME);
@@ -336,6 +346,7 @@ pub fn move_to_cgroup(pid: &str) {
 ```
 
 **Enforcement:**
+
 - Kernel tracks all memory allocations (heap, stack, mmap, page cache)
 - When limit exceeded → OOM killer triggers
 - Process receives SIGKILL (exit code 137)
@@ -348,19 +359,20 @@ pub fn move_to_cgroup(pid: &str) {
 ```rust
 pub fn setup_cgroup(config: &PolicyConfig) -> Result<()> {
     // ... (memory setup above)
-    
+
     // Set CPU bandwidth limit
     let cpu_max = format!("{}/cpu.max", cgroup_path);
     let cpu_limit = config.get_cpu_limit_string();  // e.g., "500000 1000000"
     fs::write(&cpu_max, &cpu_limit)?;
-    
+
     println!("✓ CPU limit: {}%", config.memory_policies.cpu_limit_percent);
-    
+
     Ok(())
 }
 ```
 
 **How CFS bandwidth works:**
+
 - Format: `"quota period"` in microseconds
 - Example: `"500000 1000000"` = 50% of one CPU core
 - Process gets 500ms of CPU time per 1-second period
@@ -377,15 +389,15 @@ pub fn setup_cgroup(config: &PolicyConfig) -> Result<()> {
 
 ```rust
 pub async fn monitor_processes(
-    process_tracker: Arc<Mutex<HashMap<String, Instant>>>, 
+    process_tracker: Arc<Mutex<HashMap<String, Instant>>>,
     wall_clock_limit: Duration,
     max_file_size: u64,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(100));
-    
+
     loop {
         interval.tick().await;
-        
+
         // Scan /proc for curl/wget processes
         if let Ok(entries) = fs::read_dir("/proc") {
             for entry in entries.flatten() {
@@ -393,14 +405,14 @@ pub async fn monitor_processes(
                     if file_name.chars().all(|c| c.is_numeric()) {
                         let pid = file_name;
                         let comm_path = format!("/proc/{}/comm", pid);
-                        
+
                         if let Ok(comm) = fs::read_to_string(&comm_path) {
                             let comm = comm.trim();
                             if comm == "curl" || comm == "wget" {
                                 handle_download_process(
-                                    &pid, 
-                                    &process_tracker, 
-                                    wall_clock_limit, 
+                                    &pid,
+                                    &process_tracker,
+                                    wall_clock_limit,
                                     max_file_size
                                 );
                             }
@@ -414,6 +426,7 @@ pub async fn monitor_processes(
 ```
 
 **Timeout enforcement:**
+
 ```rust
 fn handle_download_process(
     pid: &str,
@@ -422,11 +435,11 @@ fn handle_download_process(
     max_file_size: u64,
 ) {
     let mut tracker = tracker.lock().unwrap();
-    
+
     if let Some(start_time) = tracker.get(pid) {
         // Check wall-clock timeout
         if start_time.elapsed() > wall_clock_limit {
-            info!("Killing {} - exceeded {}s wall clock", 
+            info!("Killing {} - exceeded {}s wall clock",
                   pid, wall_clock_limit.as_secs());
             kill_process(pid);
             tracker.remove(pid);
@@ -452,7 +465,7 @@ pub fn set_stack_limit(limit_bytes: u64) -> Result<()> {
         rlim_cur: limit_bytes,
         rlim_max: limit_bytes,
     };
-    
+
     unsafe {
         if libc::setrlimit(libc::RLIMIT_STACK, &stack_limit) == 0 {
             println!("✓ Stack limit: {}MB", limit_bytes / (1024 * 1024));
@@ -484,12 +497,12 @@ pub fn check_sensitive_environment(pid: &str) {
                 .split('\0')
                 .filter(|s| {
                     let upper = s.to_uppercase();
-                    (upper.contains("PASSWORD") || 
-                     upper.contains("KEY") || 
+                    (upper.contains("PASSWORD") ||
+                     upper.contains("KEY") ||
                      upper.contains("SECRET")) && s.contains('=')
                 })
                 .collect();
-            
+
             if !sensitive_vars.is_empty() {
                 warn!("SEC-002: PID {} has sensitive env vars:", pid);
                 for var in &sensitive_vars {
@@ -519,7 +532,7 @@ pub fn capable(cred: *const cred, ns: *const user_namespace, cap: i32, opts: u32
     if !matches_download_tool(&comm) {
         return 0;
     }
-    
+
     match cap {
         CAP_NET_ADMIN => {
             info!("SEC-003: Blocked CAP_NET_ADMIN for {}", comm);
@@ -545,7 +558,7 @@ pub fn task_kill(p: *mut task_struct, info: *mut kernel_siginfo, sig: i32, cred:
     if !matches_download_tool(&comm) {
         return 0;
     }
-    
+
     match sig {
         SIGTERM | SIGINT => 0,  // Allow graceful shutdown
         _ => {
@@ -592,12 +605,14 @@ pub fn kernel_read_file(file: *mut file, id: kernel_read_file_id, contents: bool
 **Method:** Scan `/proc` filesystem every 100ms
 
 **Why `/proc`?**
+
 - ✅ Reliable and standard across all Linux distributions
 - ✅ No special kernel features required
 - ✅ Works on all architectures (x86_64, ARM, etc.)
 - ✅ Simple to implement and maintain
 
 **Implementation:**
+
 ```rust
 // Read all entries in /proc
 for entry in fs::read_dir("/proc")?.flatten() {
@@ -620,6 +635,7 @@ for entry in fs::read_dir("/proc")?.flatten() {
 ### Tracking State
 
 **Data structure:**
+
 ```rust
 Arc<Mutex<HashMap<String, Instant>>>
 //          ^^^^^^  ^^^^^^^
@@ -627,6 +643,7 @@ Arc<Mutex<HashMap<String, Instant>>>
 ```
 
 **Why this design?**
+
 - `Arc<Mutex<...>>` allows sharing between async tasks
 - `HashMap` provides O(1) lookup and insertion
 - `Instant` for monotonic time measurement (unaffected by system clock changes)
@@ -658,21 +675,25 @@ cmd-sandbox-ebpf/src/
 ### Key Design Decisions
 
 **1. Modular architecture** - Each policy type in separate module
+
 - Easy to understand and maintain
 - Clear separation of concerns
 - Can disable individual policies if needed
 
 **2. Configuration-driven** - All policies defined in `policy_config.json`
+
 - No recompilation needed to change limits
 - Easy to test different configurations
 - Supports per-deployment customization
 
 **3. Fail-safe defaults** - If eBPF hook not available, log warning but continue
+
 - Graceful degradation on older kernels
 - Better user experience
 - Clear feedback about what's enforced vs. not
 
 **4. Comprehensive logging** - All policy violations logged
+
 - Audit trail for security review
 - Debugging and troubleshooting
 - Compliance requirements
@@ -680,18 +701,21 @@ cmd-sandbox-ebpf/src/
 ## Performance Characteristics
 
 ### eBPF LSM Hooks
+
 - **Overhead:** <1% (thanks to BPF JIT compilation)
 - **Latency:** <1μs per syscall
 - **Memory:** ~4KB per loaded program
 - **Scalability:** O(1) for most operations
 
 ### cgroup Controllers
+
 - **Overhead:** <1% (kernel built-in accounting)
 - **Context switch impact:** Minimal (CFS scheduler integration)
 - **Memory:** ~100KB per cgroup
 - **Enforcement:** Immediate (no polling needed)
 
 ### Userspace Monitoring
+
 - **CPU usage:** <0.1% (100ms polling interval)
 - **Memory:** ~10KB (process tracking HashMap)
 - **Latency:** ±100ms (polling interval)

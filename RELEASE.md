@@ -60,7 +60,9 @@ Users downloading pre-built binaries **DO NOT** need:
 They **ONLY** need:
 - ✅ Linux kernel 5.7+ with BPF LSM enabled
 - ✅ cgroup v2 mounted
-- ✅ Root/sudo access
+- ✅ curl or wget (for downloading)
+- ✅ tar (for extracting)
+- ✅ Root/sudo access (to run the sandbox)
 
 ### Workflow File
 

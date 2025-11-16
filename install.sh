@@ -1,7 +1,7 @@
 #!/bin/bash
-# curl_sandbox-rs standalone installer
-# Can be run directly via: curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash
-# Or downloaded and run locally
+# curl_sandbox-rs installer
+# Downloads and installs pre-built binaries from GitHub releases
+# Can be run directly via: curl -fsSL https://raw.githubusercontent.com/AnirudhG07/curl_sandbox-rs/main/install.sh | bash
 
 set -e
 
@@ -13,12 +13,11 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # GitHub repository info
-GITHUB_REPO="AnirudhG07/curl_sandbox-rs"
-GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
+GITHUB_REPO="AnirudhG07/cmd_sandbox-rs"
 GITHUB_RELEASES_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║     cmd_sandbox-rs Standalone Installer                       ║${NC}"
+echo -e "${BLUE}║     cmd_sandbox-rs Installer                                  ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -27,31 +26,21 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to ask for permission
-ask_permission() {
-    local prompt="$1"
-    echo -e "${YELLOW}${prompt}${NC}"
-    read -p "Continue? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        return 1
-    fi
-    return 0
-}
-
 # Check if running on Linux
 OS_TYPE=$(uname -s)
 if [ "$OS_TYPE" != "Linux" ]; then
     echo -e "${RED}Error: This installer only works on Linux${NC}"
     echo -e "${YELLOW}Detected OS: $OS_TYPE${NC}"
     echo ""
-    echo "This project requires:"
-    echo "  - Linux kernel 5.7+ with BPF LSM support"
-    echo "  - cgroup v2"
-    echo "  - eBPF capabilities"
-    echo ""
-    echo "These features are only available on Linux."
+    echo "This project requires Linux kernel 5.7+ with BPF LSM support."
     exit 1
+fi
+
+# Check if running as root
+if [[ $EUID -eq 0 ]]; then
+   echo -e "${RED}Error: Do not run this installer as root${NC}"
+   echo -e "${YELLOW}The installer will ask for sudo when needed${NC}"
+   exit 1
 fi
 
 # Detect architecture
@@ -66,133 +55,130 @@ case "$ARCH" in
         ARCH_SUFFIX="aarch64"
         ;;
     *)
-        echo -e "${YELLOW}⚠ Detected architecture: $ARCH${NC}"
-        echo -e "${YELLOW}  Pre-built binaries may not be available.${NC}"
-        echo -e "${YELLOW}  Will attempt to build from source.${NC}"
-        ARCH_SUFFIX="unknown"
+        echo -e "${RED}✗ Unsupported architecture: $ARCH${NC}"
+        echo -e "${YELLOW}Pre-built binaries are only available for x86_64 and ARM64${NC}"
+        echo ""
+        echo "To build from source:"
+        echo "  git clone https://github.com/AnirudhG07/cmd_sandbox-rs.git"
+        echo "  cd cmd_sandbox-rs"
+        echo "  cargo build --release"
+        exit 1
         ;;
 esac
 
-# Display kernel version early
 KERNEL_VERSION=$(uname -r)
 echo -e "${BLUE}Kernel version: $KERNEL_VERSION${NC}"
 echo ""
 
-# Check if running as root
-if [[ $EUID -eq 0 ]]; then
-   echo -e "${RED}Error: Do not run this installer as root${NC}"
-   echo -e "${YELLOW}The installer will ask for sudo when needed${NC}"
-   exit 1
+# Check for REQUIRED dependencies
+echo -e "${BLUE}[1/3] Checking required dependencies...${NC}"
+
+MISSING_DEPS=()
+
+if ! command_exists curl && ! command_exists wget; then
+    MISSING_DEPS+=("curl or wget")
 fi
 
-# Installation mode selection
-echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}  Installation Mode${NC}"
-echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo ""
-echo "Choose installation method:"
-echo ""
-echo "  1) ${GREEN}Download pre-built binaries${NC} (fastest, recommended)"
-echo "     - Quick installation (~5 seconds)"
-echo "     - No build tools required"
-echo "     - Available for x86_64 and ARM64"
-echo ""
-echo "  2) ${YELLOW}Build from source${NC} (full control)"
-echo "     - Requires Rust toolchain"
-echo "     - Takes 10-20 minutes"
-echo "     - Best for development"
-echo ""
+if ! command_exists tar; then
+    MISSING_DEPS+=("tar")
+fi
 
-read -p "Select option (1 or 2): " -n 1 -r INSTALL_MODE
-echo ""
-echo ""
-
-if [[ $INSTALL_MODE == "1" ]]; then
-    # ===================================================================
-    # OPTION 1: Download pre-built binaries
-    # ===================================================================
-    
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}  Downloading Pre-built Binaries${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
+    echo -e "${RED}✗ Missing required dependencies:${NC}"
+    for dep in "${MISSING_DEPS[@]}"; do
+        echo -e "  ${RED}✗${NC} $dep"
+    done
     echo ""
-    
-    # Check for required tools
-    if ! command_exists curl && ! command_exists wget; then
-        echo -e "${RED}Error: Neither curl nor wget found${NC}"
-        echo "Please install curl or wget first"
-        exit 1
-    fi
-    
-    if ! command_exists tar; then
-        echo -e "${RED}Error: tar command not found${NC}"
-        echo "Please install tar first"
-        exit 1
-    fi
-    
-    # Try to get latest release info
-    echo -e "${BLUE}Fetching latest release information...${NC}"
-    
-    if command_exists curl; then
-        RELEASE_INFO=$(curl -sL "$GITHUB_RELEASES_URL" 2>/dev/null || echo "")
-    else
-        RELEASE_INFO=$(wget -qO- "$GITHUB_RELEASES_URL" 2>/dev/null || echo "")
-    fi
-    
-    if [ -z "$RELEASE_INFO" ]; then
-        echo -e "${YELLOW}⚠ Could not fetch release information from GitHub${NC}"
-        echo -e "${YELLOW}  This might be because:${NC}"
-        echo -e "${YELLOW}  - No releases have been published yet${NC}"
-        echo -e "${YELLOW}  - Network connectivity issues${NC}"
-        echo ""
-        echo -e "${YELLOW}Falling back to build from source...${NC}"
-        INSTALL_MODE="2"
-    else
-        # Extract download URL for the appropriate architecture
-        DOWNLOAD_URL=$(echo "$RELEASE_INFO" | grep -o "https://.*cmd-sandbox-${ARCH_SUFFIX}.*\.tar\.gz" | head -1)
-        
-        if [ -z "$DOWNLOAD_URL" ]; then
-            echo -e "${YELLOW}⚠ No pre-built binary found for architecture: ${ARCH}${NC}"
-            echo -e "${YELLOW}  Falling back to build from source...${NC}"
-            INSTALL_MODE="2"
-        else
-            RELEASE_TAG=$(echo "$RELEASE_INFO" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/"tag_name": *"\(.*\)"/\1/')
-            
-            echo -e "${GREEN}✓ Found release: $RELEASE_TAG${NC}"
-            echo -e "${BLUE}Download URL: $DOWNLOAD_URL${NC}"
-            echo ""
-            
-            # Create temporary directory
-            TEMP_DIR=$(mktemp -d)
-            cd "$TEMP_DIR"
-            
-            echo -e "${BLUE}Downloading binaries...${NC}"
-            if command_exists curl; then
-                curl -fsSL "$DOWNLOAD_URL" -o cmd-sandbox.tar.gz
-            else
-                wget -q "$DOWNLOAD_URL" -O cmd-sandbox.tar.gz
-            fi
-            
-            echo -e "${BLUE}Extracting...${NC}"
-            tar -xzf cmd-sandbox.tar.gz
-            
-            # Install binaries
-            INSTALL_DIR="$HOME/.local/bin"
-            mkdir -p "$INSTALL_DIR"
-            
-            echo -e "${BLUE}Installing binaries to $INSTALL_DIR...${NC}"
-            cp cmd-sandbox "$INSTALL_DIR/"
-            cp cmd-sandbox-tests "$INSTALL_DIR/"
-            chmod +x "$INSTALL_DIR/cmd-sandbox" "$INSTALL_DIR/cmd-sandbox-tests"
-            
-            # Install test helpers if they exist
-            if [ -d "test_helpers" ]; then
-                mkdir -p "$HOME/.local/share/cmd-sandbox/test_helpers"
-                cp -r test_helpers/* "$HOME/.local/share/cmd-sandbox/test_helpers/"
-            fi
-            
-            # Create wrapper script
-            cat > "$INSTALL_DIR/cmd_sandbox" << 'WRAPPER_EOF'
+    echo -e "${YELLOW}Please install the missing dependencies and try again.${NC}"
+    echo ""
+    echo "On Debian/Ubuntu:"
+    echo "  sudo apt update && sudo apt install -y curl tar"
+    echo ""
+    echo "On Fedora/RHEL:"
+    echo "  sudo dnf install -y curl tar"
+    echo ""
+    exit 1
+fi
+
+echo -e "${GREEN}✓ All required dependencies found${NC}"
+echo ""
+
+# Download pre-built binaries
+echo -e "${BLUE}[2/3] Downloading pre-built binaries from GitHub...${NC}"
+
+# Try to get latest release info
+if command_exists curl; then
+    RELEASE_INFO=$(curl -sL "$GITHUB_RELEASES_URL" 2>/dev/null || echo "")
+else
+    RELEASE_INFO=$(wget -qO- "$GITHUB_RELEASES_URL" 2>/dev/null || echo "")
+fi
+
+if [ -z "$RELEASE_INFO" ]; then
+    echo -e "${RED}✗ Could not fetch release information from GitHub${NC}"
+    echo -e "${YELLOW}This might be because:${NC}"
+    echo -e "${YELLOW}  - No releases have been published yet${NC}"
+    echo -e "${YELLOW}  - Network connectivity issues${NC}"
+    echo ""
+    echo "Please check: https://github.com/${GITHUB_REPO}/releases"
+    exit 1
+fi
+
+# Extract download URL for the appropriate architecture
+DOWNLOAD_URL=$(echo "$RELEASE_INFO" | grep -o "https://.*cmd-sandbox-${ARCH_SUFFIX}.*\.tar\.gz" | head -1)
+
+if [ -z "$DOWNLOAD_URL" ]; then
+    echo -e "${RED}✗ No pre-built binary found for architecture: ${ARCH}${NC}"
+    echo ""
+    echo "Please check: https://github.com/${GITHUB_REPO}/releases"
+    echo ""
+    echo "Or build from source:"
+    echo "  git clone https://github.com/${GITHUB_REPO}.git"
+    echo "  cd curl_sandbox-rs"
+    echo "  cargo build --release"
+    exit 1
+fi
+
+RELEASE_TAG=$(echo "$RELEASE_INFO" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/"tag_name": *"\(.*\)"/\1/')
+
+echo -e "${GREEN}✓ Found release: $RELEASE_TAG${NC}"
+echo -e "${BLUE}  URL: $DOWNLOAD_URL${NC}"
+echo ""
+
+# Create temporary directory
+TEMP_DIR=$(mktemp -d)
+cd "$TEMP_DIR"
+
+echo -e "${BLUE}Downloading...${NC}"
+if command_exists curl; then
+    curl -fsSL "$DOWNLOAD_URL" -o cmd-sandbox.tar.gz
+else
+    wget -q "$DOWNLOAD_URL" -O cmd-sandbox.tar.gz
+fi
+
+echo -e "${BLUE}Extracting...${NC}"
+tar -xzf cmd-sandbox.tar.gz
+
+echo -e "${GREEN}✓ Download complete${NC}"
+echo ""
+
+# Install binaries
+echo -e "${BLUE}[3/3] Installing binaries...${NC}"
+
+INSTALL_DIR="$HOME/.local/bin"
+mkdir -p "$INSTALL_DIR"
+
+cp cmd-sandbox "$INSTALL_DIR/"
+cp cmd-sandbox-tests "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/cmd-sandbox" "$INSTALL_DIR/cmd-sandbox-tests"
+
+# Install test helpers if they exist
+if [ -d "test_helpers" ]; then
+    mkdir -p "$HOME/.local/share/cmd-sandbox/test_helpers"
+    cp -r test_helpers/* "$HOME/.local/share/cmd-sandbox/test_helpers/"
+fi
+
+# Create wrapper script
+cat > "$INSTALL_DIR/cmd_sandbox" << 'WRAPPER_EOF'
 #!/bin/bash
 # cmd_sandbox - Wrapper for curl_sandbox-rs
 
@@ -226,15 +212,6 @@ case "$1" in
             exit 1
         fi
         exec "$INSTALL_DIR/cmd-sandbox-tests" "$@"
-        ;;
-    build)
-        echo -e "${RED}Error: Cannot rebuild - installed from pre-built binaries${NC}"
-        echo ""
-        echo "To build from source, clone the repository:"
-        echo "  git clone https://github.com/AnirudhG07/curl_sandbox-rs.git"
-        echo "  cd curl_sandbox-rs"
-        echo "  cargo build --release"
-        exit 1
         ;;
     help|--help|-h)
         cat << EOF
@@ -273,55 +250,17 @@ EOF
         ;;
 esac
 WRAPPER_EOF
-            
-            chmod +x "$INSTALL_DIR/cmd_sandbox"
-            
-            # Cleanup
-            cd /
-            rm -rf "$TEMP_DIR"
-            
-            echo ""
-            echo -e "${GREEN}✓ Installation complete!${NC}"
-        fi
-    fi
-fi
 
-if [[ $INSTALL_MODE == "2" ]]; then
-    # ===================================================================
-    # OPTION 2: Build from source
-    # ===================================================================
-    
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}  Building from Source${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-    echo ""
-    
-    # Download the full install script from GitHub and execute
-    echo -e "${BLUE}Downloading build installer...${NC}"
-    
-    TEMP_INSTALL_SCRIPT=$(mktemp)
-    
-    if command_exists curl; then
-        curl -fsSL "${GITHUB_RAW_URL}/install-build.sh" -o "$TEMP_INSTALL_SCRIPT"
-    elif command_exists wget; then
-        wget -qO "$TEMP_INSTALL_SCRIPT" "${GITHUB_RAW_URL}/install-build.sh"
-    else
-        echo -e "${RED}Error: Neither curl nor wget found${NC}"
-        exit 1
-    fi
-    
-    chmod +x "$TEMP_INSTALL_SCRIPT"
-    
-    echo -e "${BLUE}Running build installer...${NC}"
-    echo ""
-    
-    exec bash "$TEMP_INSTALL_SCRIPT"
-    
-    # Cleanup happens via exec, script ends here
-fi
+chmod +x "$INSTALL_DIR/cmd_sandbox"
 
-# Final instructions (only reached if pre-built binary install succeeded)
+# Cleanup
+cd /
+rm -rf "$TEMP_DIR"
+
+echo -e "${GREEN}✓ Installation complete!${NC}"
 echo ""
+
+# Final instructions
 echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Installation Complete!${NC}"
 echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
@@ -331,6 +270,7 @@ echo ""
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo -e "${YELLOW}⚠ $HOME/.local/bin is not in your PATH${NC}"
     echo -e "${YELLOW}  Add this line to your ~/.bashrc or ~/.zshrc:${NC}"
+    echo ""
     echo -e "${YELLOW}  export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
     echo ""
     echo -e "${YELLOW}  Then run: source ~/.bashrc (or ~/.zshrc)${NC}"

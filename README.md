@@ -39,13 +39,23 @@ All enforcement happens at the kernel level - no wrapper scripts, no LD_PRELOAD 
 
 ## Installation
 
-### Quick Installation(Recommended)
+### Quick Installation (Recommended)
 
-You can run an interactive install script which will set you up for running the sandbox, from scratch by installing all dependencies(and asking permissions for it). Note that to enable BPF LSM, you may need to reboot as the installation script may guide you through, please do not ignore it.
+Download and install pre-built binaries from GitHub releases:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AnirudhG07/curl_sandbox-rs/main/install.sh | bash
 ```
+
+**Requirements:**
+- Linux kernel 5.7+ with BPF LSM enabled
+- curl or wget
+- tar
+
+The installer will:
+- Detect your architecture (x86_64 or ARM64)
+- Download the latest pre-built binary
+- Install to `~/.local/bin`
 
 Then add to PATH (if not already):
 ```bash
