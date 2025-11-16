@@ -17,6 +17,48 @@ echo -e "${BLUE}  curl_sandbox-rs Installer${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
+# Check if running on Linux
+OS_TYPE=$(uname -s)
+if [ "$OS_TYPE" != "Linux" ]; then
+    echo -e "${RED}Error: This installer only works on Linux${NC}"
+    echo -e "${YELLOW}Detected OS: $OS_TYPE${NC}"
+    echo ""
+    echo "This project requires:"
+    echo "  - Linux kernel 5.7+ with BPF LSM support"
+    echo "  - cgroup v2"
+    echo "  - eBPF capabilities"
+    echo ""
+    echo "These features are only available on Linux."
+    exit 1
+fi
+
+# Detect architecture
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64|amd64)
+        echo -e "${GREEN}✓ Detected architecture: x86_64${NC}"
+        ;;
+    aarch64|arm64)
+        echo -e "${GREEN}✓ Detected architecture: ARM64 (aarch64)${NC}"
+        ;;
+    *)
+        echo -e "${YELLOW}⚠ Detected architecture: $ARCH${NC}"
+        echo -e "${YELLOW}  This installer supports x86_64 and ARM64.${NC}"
+        echo -e "${YELLOW}  Your architecture may work but is untested.${NC}"
+        echo ""
+        read -p "Continue anyway? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+        ;;
+esac
+
+# Display kernel version early
+KERNEL_VERSION=$(uname -r)
+echo -e "${BLUE}Kernel version: $KERNEL_VERSION${NC}"
+echo ""
+
 # Check if running as root
 if [[ $EUID -eq 0 ]]; then
    echo -e "${RED}Error: Do not run this installer as root${NC}"
@@ -29,10 +71,26 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Function to ask for permission
+ask_permission() {
+    local prompt="$1"
+    echo -e "${YELLOW}${prompt}${NC}"
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
 # Arrays to track missing dependencies
 MISSING_DEPS=()
 MISSING_TOOLS=()
 KERNEL_ISSUES=()
+NEEDS_RUST_INSTALL=false
+NEEDS_NIGHTLY_INSTALL=false
+NEEDS_BPF_LINKER_INSTALL=false
+NEEDS_GCC_INSTALL=false
 
 # Check prerequisites
 echo -e "${BLUE}[1/6] Checking prerequisites...${NC}"
@@ -40,36 +98,42 @@ echo -e "${BLUE}[1/6] Checking prerequisites...${NC}"
 if ! command_exists rustc; then
     echo -e "${RED}✗ Rust is not installed${NC}"
     MISSING_DEPS+=("Rust toolchain")
+    NEEDS_RUST_INSTALL=true
 else
     echo -e "${GREEN}✓ Rust installed: $(rustc --version)${NC}"
 fi
 
 if ! command_exists cargo; then
-    echo -e "${RED}✗ Cargo is not installed${NC}"
-    MISSING_DEPS+=("Cargo")
+    if [ "$NEEDS_RUST_INSTALL" = false ]; then
+        echo -e "${RED}✗ Cargo is not installed${NC}"
+        MISSING_DEPS+=("Cargo")
+    fi
 else
     echo -e "${GREEN}✓ Cargo installed: $(cargo --version)${NC}"
 fi
 
 if command_exists rustc && ! rustup toolchain list | grep -q nightly; then
-    echo -e "${YELLOW}⚠ Nightly toolchain not found, installing...${NC}"
-    rustup toolchain install nightly --component rust-src
-fi
-if command_exists rustc && rustup toolchain list | grep -q nightly; then
-    echo -e "${GREEN}✓ Nightly toolchain installed${NC}"
+    echo -e "${YELLOW}⚠ Nightly toolchain not found${NC}"
+    NEEDS_NIGHTLY_INSTALL=true
+else
+    if command_exists rustc; then
+        echo -e "${GREEN}✓ Nightly toolchain installed${NC}"
+    fi
 fi
 
 if command_exists cargo && ! command_exists bpf-linker; then
-    echo -e "${YELLOW}⚠ bpf-linker not found, installing...${NC}"
-    cargo install bpf-linker
-fi
-if command_exists bpf-linker; then
-    echo -e "${GREEN}✓ bpf-linker installed${NC}"
+    echo -e "${YELLOW}⚠ bpf-linker not found${NC}"
+    NEEDS_BPF_LINKER_INSTALL=true
+else
+    if command_exists bpf-linker; then
+        echo -e "${GREEN}✓ bpf-linker installed${NC}"
+    fi
 fi
 
 if ! command_exists gcc; then
     echo -e "${YELLOW}⚠ GCC not found (optional, needed for test helpers)${NC}"
     MISSING_TOOLS+=("gcc")
+    NEEDS_GCC_INSTALL=true
 else
     echo -e "${GREEN}✓ GCC installed${NC}"
 fi
@@ -123,10 +187,6 @@ if [ ${#MISSING_DEPS[@]} -ne 0 ] || [ ${#KERNEL_ISSUES[@]} -ne 0 ]; then
             echo -e "  ${RED}✗${NC} $dep"
         done
         echo ""
-        echo -e "${BLUE}To install Rust:${NC}"
-        echo -e "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        echo -e "  source \$HOME/.cargo/env"
-        echo ""
     fi
     
     if [ ${#KERNEL_ISSUES[@]} -ne 0 ]; then
@@ -135,25 +195,6 @@ if [ ${#MISSING_DEPS[@]} -ne 0 ] || [ ${#KERNEL_ISSUES[@]} -ne 0 ]; then
             echo -e "  ${RED}✗${NC} $issue"
         done
         echo ""
-        
-        if [ "$BPF_LSM_ENABLED" = false ]; then
-            echo -e "${BLUE}To enable BPF LSM:${NC}"
-            echo -e "  1. Edit GRUB configuration:"
-            echo -e "     ${YELLOW}sudo nano /etc/default/grub${NC}"
-            echo ""
-            echo -e "  2. Add/modify GRUB_CMDLINE_LINUX to include:"
-            echo -e "     ${YELLOW}lsm=lockdown,yama,integrity,apparmor,bpf${NC}"
-            echo -e "     (adjust based on your current LSMs, keep existing ones)"
-            echo ""
-            echo -e "  3. Update GRUB and reboot:"
-            echo -e "     ${YELLOW}sudo update-grub${NC}  # Debian/Ubuntu"
-            echo -e "     ${YELLOW}sudo grub2-mkconfig -o /boot/grub2/grub.cfg${NC}  # Fedora/RHEL"
-            echo -e "     ${YELLOW}sudo reboot${NC}"
-            echo ""
-            echo -e "  4. After reboot, verify with:"
-            echo -e "     ${YELLOW}cat /sys/kernel/security/lsm${NC}"
-            echo ""
-        fi
     fi
     
     if [ ${#MISSING_TOOLS[@]} -ne 0 ]; then
@@ -161,14 +202,285 @@ if [ ${#MISSING_DEPS[@]} -ne 0 ] || [ ${#KERNEL_ISSUES[@]} -ne 0 ]; then
         for tool in "${MISSING_TOOLS[@]}"; do
             echo -e "  ${YELLOW}○${NC} $tool"
         done
-        echo -e "  Install with: ${YELLOW}sudo apt install gcc${NC}  (Debian/Ubuntu)"
-        echo -e "            or: ${YELLOW}sudo dnf install gcc${NC}  (Fedora/RHEL)"
         echo ""
     fi
     
     echo -e "${RED}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo -e "${YELLOW}Please install the required dependencies and rerun this script.${NC}"
+    
+    # Offer to install missing dependencies
+    if [ "$NEEDS_RUST_INSTALL" = true ]; then
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}  Rust Installation${NC}"
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo "Rust is required to build this project."
+        echo "This will download and install Rust from https://rustup.rs/"
+        echo ""
+        echo "Actions to be performed:"
+        echo "  1. Download Rust installer"
+        echo "  2. Install Rust toolchain (stable + nightly)"
+        echo "  3. Install cargo (Rust package manager)"
+        echo "  4. Add ~/.cargo/bin to your PATH"
+        echo ""
+        
+        if ask_permission "Install Rust now?"; then
+            echo ""
+            echo -e "${BLUE}Installing Rust...${NC}"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source "$HOME/.cargo/env"
+            echo -e "${GREEN}✓ Rust installed successfully${NC}"
+            NEEDS_RUST_INSTALL=false
+            
+            # Install nightly since we're doing fresh install
+            echo -e "${BLUE}Installing nightly toolchain...${NC}"
+            rustup toolchain install nightly --component rust-src
+            echo -e "${GREEN}✓ Nightly toolchain installed${NC}"
+            NEEDS_NIGHTLY_INSTALL=false
+            
+            # Install bpf-linker
+            echo -e "${BLUE}Installing bpf-linker...${NC}"
+            cargo install bpf-linker
+            echo -e "${GREEN}✓ bpf-linker installed${NC}"
+            NEEDS_BPF_LINKER_INSTALL=false
+            echo ""
+        else
+            echo -e "${YELLOW}Skipping Rust installation. Please install manually and rerun this script.${NC}"
+            echo -e "${YELLOW}Visit: https://rustup.rs/${NC}"
+            exit 1
+        fi
+    fi
+    
+    if [ "$NEEDS_NIGHTLY_INSTALL" = true ] && command_exists rustup; then
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}  Nightly Toolchain Installation${NC}"
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo "Nightly toolchain is required for eBPF compilation."
+        echo ""
+        echo "Actions to be performed:"
+        echo "  1. Install Rust nightly toolchain"
+        echo "  2. Install rust-src component (for eBPF)"
+        echo ""
+        
+        if ask_permission "Install nightly toolchain?"; then
+            echo ""
+            echo -e "${BLUE}Installing nightly toolchain...${NC}"
+            rustup toolchain install nightly --component rust-src
+            echo -e "${GREEN}✓ Nightly toolchain installed${NC}"
+            echo ""
+        else
+            echo -e "${YELLOW}Skipping nightly installation. This is required for eBPF.${NC}"
+            exit 1
+        fi
+    fi
+    
+    if [ "$NEEDS_BPF_LINKER_INSTALL" = true ] && command_exists cargo; then
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}  bpf-linker Installation${NC}"
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo "bpf-linker is required to compile eBPF programs."
+        echo ""
+        echo "Actions to be performed:"
+        echo "  1. Download and compile bpf-linker from crates.io"
+        echo "  2. Install to ~/.cargo/bin/"
+        echo ""
+        echo "Note: This may take several minutes."
+        echo ""
+        
+        if ask_permission "Install bpf-linker?"; then
+            echo ""
+            echo -e "${BLUE}Installing bpf-linker (this may take a while)...${NC}"
+            cargo install bpf-linker
+            echo -e "${GREEN}✓ bpf-linker installed${NC}"
+            echo ""
+        else
+            echo -e "${YELLOW}Skipping bpf-linker installation. This is required for eBPF.${NC}"
+            exit 1
+        fi
+    fi
+    
+    if [ "$NEEDS_GCC_INSTALL" = true ]; then
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}  GCC Installation (Optional)${NC}"
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo "GCC is needed to compile test helper binaries."
+        echo "The sandbox will work without it, but some tests won't run."
+        echo ""
+        echo "Actions to be performed:"
+        
+        # Detect distribution
+        if [ -f /etc/debian_version ]; then
+            echo "  1. Run: sudo apt update"
+            echo "  2. Run: sudo apt install -y gcc"
+            echo ""
+            
+            if ask_permission "Install GCC? (requires sudo password)"; then
+                echo ""
+                echo -e "${BLUE}Installing GCC...${NC}"
+                sudo apt update && sudo apt install -y gcc
+                echo -e "${GREEN}✓ GCC installed${NC}"
+                echo ""
+            else
+                echo -e "${YELLOW}Skipping GCC installation. Test helpers won't be compiled.${NC}"
+                echo ""
+            fi
+        elif [ -f /etc/fedora-release ] || [ -f /etc/redhat-release ]; then
+            echo "  1. Run: sudo dnf install -y gcc"
+            echo ""
+            
+            if ask_permission "Install GCC? (requires sudo password)"; then
+                echo ""
+                echo -e "${BLUE}Installing GCC...${NC}"
+                sudo dnf install -y gcc
+                echo -e "${GREEN}✓ GCC installed${NC}"
+                echo ""
+            else
+                echo -e "${YELLOW}Skipping GCC installation. Test helpers won't be compiled.${NC}"
+                echo ""
+            fi
+        else
+            echo "  Please install gcc manually using your package manager"
+            echo ""
+            echo -e "${YELLOW}Skipping GCC installation (unknown distribution).${NC}"
+            echo ""
+        fi
+    fi
+    
+    # Check for kernel issues
+    if [ ${#KERNEL_ISSUES[@]} -ne 0 ]; then
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}  Kernel Configuration Required${NC}"
+        echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        
+        if [ "$BPF_LSM_ENABLED" = false ]; then
+            echo -e "${RED}BPF LSM is NOT enabled in your kernel!${NC}"
+            echo ""
+            echo "This is a CRITICAL requirement. The sandbox will not work without it."
+            echo ""
+            echo "Actions that will be performed:"
+            echo "  1. Backup your current GRUB configuration"
+            echo "  2. Edit /etc/default/grub to add BPF LSM"
+            echo "  3. Update GRUB bootloader"
+            echo "  4. You will need to REBOOT your system"
+            echo ""
+            echo -e "${YELLOW}Current LSMs: $(cat /sys/kernel/security/lsm 2>/dev/null || echo 'unknown')${NC}"
+            echo ""
+            echo "We will add 'bpf' to your existing LSM configuration."
+            echo ""
+            
+            if ask_permission "Configure BPF LSM now? (requires sudo and REBOOT)"; then
+                echo ""
+                echo -e "${BLUE}Configuring BPF LSM...${NC}"
+                
+                # Backup GRUB config
+                echo -e "${BLUE}Creating backup of /etc/default/grub...${NC}"
+                sudo cp /etc/default/grub /etc/default/grub.backup.$(date +%Y%m%d_%H%M%S)
+                echo -e "${GREEN}✓ Backup created${NC}"
+                
+                # Get current LSM setting
+                CURRENT_LSM=$(cat /sys/kernel/security/lsm 2>/dev/null || echo "")
+                
+                if [ -n "$CURRENT_LSM" ]; then
+                    # Add bpf to existing LSMs
+                    NEW_LSM="${CURRENT_LSM},bpf"
+                else
+                    # Default LSM configuration with bpf
+                    NEW_LSM="lockdown,yama,integrity,apparmor,bpf"
+                fi
+                
+                echo -e "${BLUE}Adding BPF LSM to kernel parameters...${NC}"
+                
+                # Check if lsm= already exists in GRUB_CMDLINE_LINUX
+                if sudo grep -q 'GRUB_CMDLINE_LINUX.*lsm=' /etc/default/grub; then
+                    # Replace existing lsm= parameter
+                    sudo sed -i "s/lsm=[^ \"]*/lsm=${NEW_LSM}/" /etc/default/grub
+                else
+                    # Add lsm= parameter
+                    sudo sed -i "s/GRUB_CMDLINE_LINUX=\"/GRUB_CMDLINE_LINUX=\"lsm=${NEW_LSM} /" /etc/default/grub
+                fi
+                
+                echo -e "${GREEN}✓ GRUB configuration updated${NC}"
+                echo ""
+                
+                # Update GRUB
+                echo -e "${BLUE}Updating GRUB bootloader...${NC}"
+                if [ -f /etc/debian_version ]; then
+                    sudo update-grub
+                elif [ -f /etc/fedora-release ] || [ -f /etc/redhat-release ]; then
+                    sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+                else
+                    echo -e "${YELLOW}Unknown distribution. Please run update-grub manually.${NC}"
+                fi
+                echo -e "${GREEN}✓ GRUB updated${NC}"
+                echo ""
+                
+                echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
+                echo -e "${GREEN}  BPF LSM Configuration Complete!${NC}"
+                echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
+                echo ""
+                echo -e "${RED}IMPORTANT: You MUST reboot your system for changes to take effect.${NC}"
+                echo ""
+                echo "After reboot, verify with:"
+                echo -e "  ${YELLOW}cat /sys/kernel/security/lsm${NC}"
+                echo ""
+                echo "It should include 'bpf' in the output."
+                echo ""
+                echo "Then re-run this installer to continue the setup."
+                echo ""
+                
+                read -p "Reboot now? (y/n): " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    echo -e "${BLUE}Rebooting in 5 seconds... (Ctrl+C to cancel)${NC}"
+                    sleep 5
+                    sudo reboot
+                else
+                    echo -e "${YELLOW}Please reboot manually and re-run this installer.${NC}"
+                    exit 0
+                fi
+            else
+                echo -e "${RED}Cannot continue without BPF LSM enabled.${NC}"
+                echo ""
+                echo "To enable BPF LSM manually:"
+                echo ""
+                echo "  1. Edit GRUB configuration:"
+                echo -e "     ${YELLOW}sudo nano /etc/default/grub${NC}"
+                echo ""
+                echo "  2. Add/modify GRUB_CMDLINE_LINUX to include:"
+                echo -e "     ${YELLOW}lsm=lockdown,yama,integrity,apparmor,bpf${NC}"
+                echo "     (adjust based on your current LSMs)"
+                echo ""
+                echo "  3. Update GRUB:"
+                echo -e "     ${YELLOW}sudo update-grub${NC}  # Debian/Ubuntu"
+                echo -e "     ${YELLOW}sudo grub2-mkconfig -o /boot/grub2/grub.cfg${NC}  # Fedora/RHEL"
+                echo ""
+                echo "  4. Reboot:"
+                echo -e "     ${YELLOW}sudo reboot${NC}"
+                echo ""
+                exit 1
+            fi
+        fi
+        
+        # Check cgroup v2
+        if ! mount | grep -q "cgroup2"; then
+            echo -e "${YELLOW}cgroup v2 is not mounted.${NC}"
+            echo ""
+            echo "Most modern distributions enable this by default."
+            echo "Check your distribution documentation for enabling cgroup v2."
+            echo ""
+            echo -e "${YELLOW}This is required for memory and CPU limits.${NC}"
+            echo ""
+        fi
+    fi
+fi
+
+# Verify all requirements are now met
+if [ "$NEEDS_RUST_INSTALL" = true ]; then
+    echo -e "${RED}Rust installation required but was skipped. Exiting.${NC}"
     exit 1
 fi
 

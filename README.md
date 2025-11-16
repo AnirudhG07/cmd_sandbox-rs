@@ -122,7 +122,7 @@ See test output for detailed results.
 
 ## Implementation Details
 
-Here is the list of policies implemented:
+The policies and their configurations have been set [policy_config.json](./policy_config.json) file where you can change any as you wish to. Here is the list of policies implemented:
 
 ### NET (Network Policies)
 
