@@ -1,1 +1,0 @@
-/tmp/curl_downloads/test_script.sh
